@@ -33,10 +33,10 @@ def llm_response(message, avatar_session: 'BaseAvatar', datainfo: dict = {}):
 
         completion = client.chat.completions.create(
             model=model,
-            messages=[{'role': 'system', 'content': '你是一个知识助手，尽量以简短、口语化的方式输出'},
+            messages=[{'role': 'system', 'content': '你是一位温柔专业的助手，请以自然对话的方式回应，语气亲切得体，表达清晰有条理。回答不要太长。'},
                       {'role': 'user', 'content': message}],
             stream=True,
-            stream_options={"include_usage": True}
+            max_tokens=512,
         )
         result = ""
         first = True

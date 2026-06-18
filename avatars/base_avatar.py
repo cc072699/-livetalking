@@ -48,6 +48,36 @@ from fractions import Fraction
 from utils.logger import logger
 from utils.image import read_imgs,mirror_index
 
+# ── 中文字幕渲染 ──
+from PIL import Image, ImageDraw, ImageFont
+
+# 在 macOS 上查找可用的中文字体
+_SUBTITLE_FONT_PATH = None
+_CANDIDATE_FONTS = [
+    "/Library/Fonts/Arial Unicode.ttf",
+    "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+    "/System/Library/Fonts/STSong.ttf",
+    "/System/Library/Fonts/Apple Symbols.ttf",
+]
+for _f in _CANDIDATE_FONTS:
+    if os.path.exists(_f):
+        _SUBTITLE_FONT_PATH = _f
+        break
+if not _SUBTITLE_FONT_PATH:
+    # fallback: let PIL find any available font
+    _SUBTITLE_FONT_PATH = "Arial Unicode MS"
+
+import re
+_SUBTITLE_MD_CLEANER = re.compile(r'[*#_~`>]+|\[([^\]]*)\]\([^)]*\)|!\[([^\]]*)\]\([^)]*\)')
+
+
+def _clean_subtitle_text(text: str) -> str:
+    """去掉 markdown 标记和多余空白"""
+    t = _SUBTITLE_MD_CLEANER.sub('', text)
+    t = t.replace('\n', ' ').replace('\r', '')
+    t = re.sub(r'\s+', ' ', t).strip()
+    return t
+
 # class State(Enum):
 #     INIT=0
 #     WAIT=1
@@ -80,6 +110,11 @@ class BaseAvatar:
         self.custom_index = {}
         # self.custom_opt = {}
         self.__loadcustom()
+
+        # ── 字幕配置 ──
+        self._subtitle_enabled = getattr(opt, 'subtitle', True)
+        self._subtitle_size = getattr(opt, 'subtitle_size', 1.0)
+        self._current_subtitle = ""
 
         self.batch_size = opt.batch_size
         self.res_frame_queue = Queue(self.batch_size*2)
@@ -407,7 +442,7 @@ class BaseAvatar:
                     self.custom_index[audiotype] += 1
                 else:
                     target_frame = self.frame_list_cycle[idx]
-                
+
                 if enable_transition:
                     # 说话→静音过渡
                     if time.time() - _transition_start < _transition_duration and _last_speaking_frame is not None:
@@ -438,7 +473,52 @@ class BaseAvatar:
                 else:
                     combine_frame = current_frame
 
+            # ── 字幕跟踪：从音频帧的 userdata 中检测文本变化 ──
+            if self._subtitle_enabled:
+                for af in audio_frames:
+                    ud = af.userdata
+                    if ud.get("status") == "start" and ud.get("text"):
+                        self._current_subtitle = ud["text"]
+                    elif ud.get("status") == "end":
+                        self._current_subtitle = ""
+
             cv2.putText(combine_frame, "LiveTalking", (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (128,128,128), 1)
+
+            # ── 叠加字幕（PIL 渲染，支持中文，固定大字号 + 自动换行） ──
+            if self._subtitle_enabled and self._current_subtitle:
+                try:
+                    txt = _clean_subtitle_text(self._current_subtitle)
+                    if txt:
+                        h, w = combine_frame.shape[:2]
+                        font_size = max(32, int(w * 0.065 * self._subtitle_size))
+                        font = ImageFont.truetype(_SUBTITLE_FONT_PATH, font_size)
+                        pil_img = Image.fromarray(cv2.cvtColor(combine_frame, cv2.COLOR_BGR2RGB))
+                        draw = ImageDraw.Draw(pil_img)
+                        # 自动换行
+                        max_w = w - 40
+                        line_h = draw.textbbox((0, 0), "测", font=font)[3] - draw.textbbox((0, 0), "测", font=font)[1]
+                        lines = []
+                        for char in txt:
+                            if not lines:
+                                lines.append(char)
+                            else:
+                                candidate = lines[-1] + char
+                                tw = draw.textbbox((0, 0), candidate, font=font)[2] - draw.textbbox((0, 0), candidate, font=font)[0]
+                                if tw <= max_w:
+                                    lines[-1] = candidate
+                                else:
+                                    lines.append(char)
+                        total_h = len(lines) * (line_h + 4)
+                        y_start = h - int(h * 0.08) - total_h
+                        for i, line in enumerate(lines):
+                            tw = draw.textbbox((0, 0), line, font=font)[2] - draw.textbbox((0, 0), line, font=font)[0]
+                            x = (w - tw) // 2
+                            y = y_start + i * (line_h + 4) + line_h
+                            draw.text((x, y - line_h), line, font=font, fill=(255, 255, 255),
+                                      stroke_width=max(2, int(font_size * 0.08)), stroke_fill=(0, 0, 0))
+                        combine_frame = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+                except Exception as e:
+                    logger.warning(f"Subtitle render error: {e}")
             
             # 使用统一输出接口推送视频帧
             self.output.push_video_frame(combine_frame)

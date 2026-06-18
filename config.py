@@ -52,6 +52,12 @@ def parse_args():
     parser.add_argument('--tts_speed', type=float, default=1.0,
                         help="TTS 语速, 1.0 正常, <1 变慢, >1 变快")
 
+    # ─── 字幕 ─────────────────────────────────────────────────────────
+    parser.add_argument('--subtitle', type=bool, default=True,
+                        help="是否显示字幕 (默认: True)")
+    parser.add_argument('--subtitle_size', type=float, default=1.0,
+                        help="字幕字号倍率 (默认: 1.0)")
+
     # ─── 传输 ─────────────────────────────────────────────────────────
     parser.add_argument('--transport', type=str, default='webrtc',
                         help="output: rtcpush/webrtc/rtmp/virtualcam")
