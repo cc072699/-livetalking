@@ -43,12 +43,14 @@ def parse_args():
                         help="custom action json")
 
     # ─── TTS ───────────────────────────────────────────────────────────
-    parser.add_argument('--tts', type=str, default='edgetts',
-                        help="tts plugin: edgetts/gpt-sovits/cosyvoice/fishtts/tencent/doubao/indextts2/azuretts/qwentts")
-    parser.add_argument('--REF_FILE', type=str, default="zh-CN-YunxiaNeural",
+    parser.add_argument('--tts', type=str, default='dashscopetts',
+                        help="tts plugin: edgetts/gpt-sovits/cosyvoice/fishtts/tencent/doubao/indextts2/azuretts/qwentts/dashscopetts")
+    parser.add_argument('--REF_FILE', type=str, default="longxiaochun",
                         help="参考文件名或语音模型ID")
     parser.add_argument('--REF_TEXT', type=str, default=None)
     parser.add_argument('--TTS_SERVER', type=str, default='http://127.0.0.1:9880')
+    parser.add_argument('--tts_speed', type=float, default=1.0,
+                        help="TTS 语速, 1.0 正常, <1 变慢, >1 变快")
 
     # ─── 传输 ─────────────────────────────────────────────────────────
     parser.add_argument('--transport', type=str, default='webrtc',

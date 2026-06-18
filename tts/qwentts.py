@@ -43,6 +43,13 @@ class QwenTTS(BaseTTS):
 
         # 音色名, 复用 REF_FILE 参数
         self.voice = opt.REF_FILE if opt.REF_FILE else 'Cherry'
+        # 默认语速, 1.0 为正常速度, <1 变慢, >1 变快
+        self.speech_rate = getattr(opt, 'tts_speed', None) or 1.0
+        if isinstance(self.speech_rate, str):
+            try:
+                self.speech_rate = float(self.speech_rate)
+            except ValueError:
+                self.speech_rate = 1.0
         # 模型名
         self.model = getattr(opt, 'qwen_tts_model', 'qwen3-tts-flash-realtime')
         # WebSocket URL
@@ -112,8 +119,9 @@ class QwenTTS(BaseTTS):
             response_format=AudioFormat.PCM_24000HZ_MONO_16BIT,  # Qwen TTS 只支持 24kHz 输出
             sample_rate=16000,
             mode='commit',
+            speech_rate=self.speech_rate,
         )
-        logger.info(f"QwenTTS 初始化完成: model={self.model}, voice={self.voice}")
+        logger.info(f"QwenTTS 初始化完成: model={self.model}, voice={self.voice}, speech_rate={self.speech_rate}")
 
     # ========================== 核心方法 ==========================
 
@@ -132,17 +140,21 @@ class QwenTTS(BaseTTS):
 
         try:
             #logger.info(f"QwenTTS 发送文本: {text[:80]}...")
-            if ref_file != self.voice:
-                logger.info(f'ref_file:{ref_file},self.voice:{self.voice}')
-                self.voice=ref_file
+            speed = float(textevent.get('tts', {}).get('speed', self.speech_rate))
+            need_reconnect = (ref_file != self.voice) or (speed != self.speech_rate)
+            if need_reconnect:
+                self.voice = ref_file
+                self.speech_rate = speed
                 self._tts_client.close()
                 self._tts_client.connect()
                 self._tts_client.update_session(
                     voice=self.voice,
-                    response_format=AudioFormat.PCM_24000HZ_MONO_16BIT,  # Qwen TTS 只支持 24kHz 输出
+                    response_format=AudioFormat.PCM_24000HZ_MONO_16BIT,
                     sample_rate=16000,
                     mode='commit',
+                    speech_rate=self.speech_rate,
                 )
+                logger.info(f"QwenTTS reconnected: voice={self.voice}, speech_rate={self.speech_rate}")
             self._tts_client.append_text(text)
             self._tts_client.commit()
 

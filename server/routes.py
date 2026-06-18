@@ -218,4 +218,8 @@ def setup_routes(app):
     # 注册 avatar 生成相关的路由
     setup_avatar_routes(app)
 
+    # ── TTS Proxy (DashScope OmniTTS 兼容 API) ──
+    from server.tts_proxy import setup_tts_proxy_routes
+    setup_tts_proxy_routes(app)
+
     app.router.add_static('/', path='web')

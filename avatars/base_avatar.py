@@ -96,7 +96,8 @@ class BaseAvatar:
             'indextts2': 'tts.indextts2',
             'azuretts': 'tts.azure',
             'qwentts': 'tts.qwentts',
-            'omnitts': 'tts.omnitts'
+            'omnitts': 'tts.omnitts',
+            'dashscopetts': 'tts.dashscopetts'
         }
 
         if opt.tts in _tts_modules:
