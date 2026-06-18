@@ -69,45 +69,49 @@ class QwenTTS(BaseTTS):
         self._first_chunk = True          # 当前合成的一句话里的第一个音频包
         self._current_text = ''
         self._current_textevent = {}
-
-        # ---------- 回调类 ----------
-        tts_ref = self
-
-        class _Callback(QwenTtsRealtimeCallback):
-            def on_open(self) -> None:
-                logger.info("QwenTTS WebSocket 连接已建立")
-
-            def on_close(self, close_status_code, close_msg) -> None:
-                logger.info(f"QwenTTS WebSocket 关闭: code={close_status_code}, msg={close_msg}")
-                tts_ref._response_event.set()
-
-            def on_event(self, response: dict) -> None:
-                try:
-                    event_type = response.get('type', '')
-
-                    if event_type == 'session.created':
-                        logger.info(f"QwenTTS session: {response.get('session', {}).get('id', '')}")
-
-                    elif event_type == 'response.audio.delta':
-                        audio_b64 = response.get('delta', '')
-                        if audio_b64:
-                            pcm_data = base64.b64decode(audio_b64)
-                            tts_ref._on_audio_data(pcm_data)
-
-                    elif event_type == 'response.done':
-                        logger.info("QwenTTS response done")
-                        tts_ref._flush_remainder()
-                        tts_ref._response_event.set()
-
-                    elif event_type == 'error':
-                        logger.error(f"QwenTTS 错误: {response}")
-                        tts_ref._response_event.set()
-
-                except Exception as e:
-                    logger.exception(f"QwenTTS 回调处理异常: {e}")
+        self._ws_connected = False        # WebSocket 连接状态
 
         # ---------- 建立唯一连接 ----------
-        self._callback = _Callback()
+        self._build_client()
+
+    class _Callback(QwenTtsRealtimeCallback):
+        def __init__(self, tts_ref):
+            super().__init__()
+            self._ref = tts_ref
+
+        def on_open(self) -> None:
+            self._ref._ws_connected = True
+            logger.info("QwenTTS WebSocket 连接已建立")
+
+        def on_close(self, close_status_code, close_msg) -> None:
+            self._ref._ws_connected = False
+            logger.info(f"QwenTTS WebSocket 关闭: code={close_status_code}, msg={close_msg}")
+            self._ref._response_event.set()
+
+        def on_event(self, response: dict) -> None:
+            try:
+                event_type = response.get('type', '')
+                if event_type == 'session.created':
+                    logger.info(f"QwenTTS session: {response.get('session', {}).get('id', '')}")
+                elif event_type == 'response.audio.delta':
+                    audio_b64 = response.get('delta', '')
+                    if audio_b64:
+                        pcm_data = base64.b64decode(audio_b64)
+                        self._ref._on_audio_data(pcm_data)
+                elif event_type == 'response.done':
+                    logger.info("QwenTTS response done")
+                    self._ref._flush_remainder()
+                    self._ref._response_event.set()
+                elif event_type == 'error':
+                    logger.error(f"QwenTTS 错误: {response}")
+                    self._ref._response_event.set()
+            except Exception as e:
+                logger.exception(f"QwenTTS 回调处理异常: {e}")
+
+    def _build_client(self):
+        """初始化 / 重建 QwenTtsRealtime 客户端（使用 self.model / self.voice / self.speech_rate）"""
+        self._remainder = np.array([], dtype=np.float32)
+        self._callback = self._Callback(self)
         self._tts_client = QwenTtsRealtime(
             model=self.model,
             callback=self._callback,
@@ -116,12 +120,41 @@ class QwenTTS(BaseTTS):
         self._tts_client.connect()
         self._tts_client.update_session(
             voice=self.voice,
-            response_format=AudioFormat.PCM_24000HZ_MONO_16BIT,  # Qwen TTS 只支持 24kHz 输出
-            sample_rate=16000,
+            response_format=AudioFormat.PCM_24000HZ_MONO_16BIT,
+            sample_rate=24000,
             mode='commit',
             speech_rate=self.speech_rate,
         )
         logger.info(f"QwenTTS 初始化完成: model={self.model}, voice={self.voice}, speech_rate={self.speech_rate}")
+
+    def _rebuild_client(self, model: str = None, voice: str = None, speed: float = None):
+        """关闭旧连接，用新参数重建 QwenTtsRealtime 客户端"""
+        try:
+            self._tts_client.close()
+        except Exception:
+            pass
+        if model:
+            self.model = model
+        if voice:
+            self.voice = voice
+        if speed is not None:
+            self.speech_rate = speed
+        self._remainder = np.array([], dtype=np.float32)
+        self._callback = self.__class__._Callback(self)
+        self._tts_client = QwenTtsRealtime(
+            model=self.model,
+            callback=self._callback,
+            url=self.ws_url,
+        )
+        self._tts_client.connect()
+        self._tts_client.update_session(
+            voice=self.voice,
+            response_format=AudioFormat.PCM_24000HZ_MONO_16BIT,
+            sample_rate=24000,
+            mode='commit',
+            speech_rate=self.speech_rate,
+        )
+        logger.info(f"QwenTTS client rebuilt: model={self.model}, voice={self.voice}, speech_rate={self.speech_rate}")
 
     # ========================== 核心方法 ==========================
 
@@ -129,7 +162,7 @@ class QwenTTS(BaseTTS):
         text, textevent = msg
         t_start = time.perf_counter()
 
-        ref_file = textevent.get('tts', {}).get('ref_file',self.opt.REF_FILE)
+        ref_file = textevent.get('tts', {}).get('ref_file', self.opt.REF_FILE)
 
         # 重置状态
         self._remainder = np.array([], dtype=np.float32)
@@ -141,20 +174,32 @@ class QwenTTS(BaseTTS):
         try:
             #logger.info(f"QwenTTS 发送文本: {text[:80]}...")
             speed = float(textevent.get('tts', {}).get('speed', self.speech_rate))
-            need_reconnect = (ref_file != self.voice) or (speed != self.speech_rate)
+            new_model = textevent.get('tts', {}).get('model', self.model)
+
+            need_reconnect = (ref_file != self.voice) or (speed != self.speech_rate) or (new_model != self.model)
             if need_reconnect:
+                need_new_client = new_model != self.model
                 self.voice = ref_file
                 self.speech_rate = speed
-                self._tts_client.close()
-                self._tts_client.connect()
-                self._tts_client.update_session(
-                    voice=self.voice,
-                    response_format=AudioFormat.PCM_24000HZ_MONO_16BIT,
-                    sample_rate=16000,
-                    mode='commit',
-                    speech_rate=self.speech_rate,
-                )
-                logger.info(f"QwenTTS reconnected: voice={self.voice}, speech_rate={self.speech_rate}")
+                if need_new_client:
+                    self.model = new_model
+                    self._build_client()
+                    logger.info(f"QwenTTS model changed, rebuilt client: model={self.model}")
+                else:
+                    self._tts_client.close()
+                    self._tts_client.connect()
+                    self._tts_client.update_session(
+                        voice=self.voice,
+                        response_format=AudioFormat.PCM_24000HZ_MONO_16BIT,
+                        sample_rate=24000,
+                        mode='commit',
+                        speech_rate=self.speech_rate,
+                    )
+                    logger.info(f"QwenTTS reconnected: voice={self.voice}, speech_rate={self.speech_rate}")
+            elif not self._ws_connected:
+                # 服务端在每次合成后断开连接，自动重建
+                self._build_client()
+                logger.info("QwenTTS auto-reconnected after server close")
             self._tts_client.append_text(text)
             self._tts_client.commit()
 
@@ -176,8 +221,8 @@ class QwenTTS(BaseTTS):
             return
 
         # 整段 24kHz PCM -> float32 -> 一次性 resample 到 16kHz
-        samples_16k = np.frombuffer(pcm_data, dtype=np.int16).astype(np.float32) / 32768.0
-        #samples_16k = resampy.resample(x=samples_24k, sr_orig=SRC_SR, sr_new=DST_SR)
+        samples_24k = np.frombuffer(pcm_data, dtype=np.int16).astype(np.float32) / 32768.0
+        samples_16k = resampy.resample(x=samples_24k, sr_orig=SRC_SR, sr_new=DST_SR)
 
         # 拼接上次剩余
         if self._remainder.shape[0] > 0:

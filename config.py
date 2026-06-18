@@ -32,7 +32,7 @@ def parse_args():
     # ─── 数字人模型 ────────────────────────────────────────────────────
     parser.add_argument('--model', type=str, default='wav2lip',
                         help="avatar model: musetalk/wav2lip/ultralight")
-    parser.add_argument('--avatar_id', type=str, default='wav2lip256_avatar1',
+    parser.add_argument('--avatar_id', type=str, default='cc3',
                         help="avatar id in data/avatars")
     parser.add_argument('--batch_size', type=int, default=16, help="infer batch")
     parser.add_argument('--modelres', type=int, default=192)
@@ -51,6 +51,10 @@ def parse_args():
     parser.add_argument('--TTS_SERVER', type=str, default='http://127.0.0.1:9880')
     parser.add_argument('--tts_speed', type=float, default=1.0,
                         help="TTS 语速, 1.0 正常, <1 变慢, >1 变快")
+
+    # ─── Qwen TTS ────────────────────────────────────────────────────
+    parser.add_argument('--qwen_tts_model', type=str, default='qwen3-tts-flash-realtime',
+                        help="Qwen TTS model name (for qwentts plugin)")
 
     # ─── 字幕 ─────────────────────────────────────────────────────────
     parser.add_argument('--subtitle', type=bool, default=True,

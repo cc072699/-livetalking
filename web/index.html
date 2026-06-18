@@ -131,7 +131,14 @@
                     <div class="row g-2 align-items-end mb-3">
                         <div class="col-md-4">
                             <label class="form-label">Avatar ID</label>
-                            <input type="text" class="form-control form-control-sm" id="offerAvatar" placeholder="wav2lip256_avatar1">
+                            <input type="text" class="form-control form-control-sm" id="offerAvatar" list="avatarList" placeholder="cc3" value="cc3">
+                            <datalist id="avatarList">
+                                <option value="cc3">
+                                <option value="cc2">
+                                <option value="cc1">
+                                <option value="wav2lip256_avatar1">
+                                <option value="musetalk_avatar3">
+                            </datalist>
                         </div>
                         <div class="col-md-4">
                             <label class="form-label">参考音频</label>
@@ -164,7 +171,7 @@
                         <label class="form-label">输入文本 <span class="param-hint">(type: echo/chat)</span></label>
                         <textarea class="form-control form-control-sm" id="txtMessage" rows="2" placeholder="输入要播报的文本...">你好，欢迎使用LiveTalking</textarea>
                     </div>
-                    <div class="d-flex gap-2 align-items-end">
+                    <div class="d-flex gap-2 align-items-end mb-2">
                         <select class="form-select form-select-sm" style="width:120px;" id="txtType">
                             <option value="echo">Echo 复读</option>
                             <option value="chat">Chat LLM</option>
@@ -175,6 +182,21 @@
                         </div>
                         <button class="btn-primary-custom btn-sm ms-auto" onclick="sendText()"><i class="bi bi-send"></i> 发送</button>
                         <button class="btn-outline-custom btn-sm" onclick="interrupt()"><i class="bi bi-stop-circle"></i> 打断</button>
+                    </div>
+                    <div class="d-flex gap-2 align-items-center">
+                        <label class="form-label mb-0" style="white-space:nowrap;">TTS 模型</label>
+                        <select class="form-select form-select-sm" id="ttsModel" style="flex:1;">
+                            <option value="qwen-tts-realtime-latest" selected>qwen-tts-realtime-latest ✅</option>
+                            <option value="qwen-tts-realtime-2025-07-15">qwen-tts-realtime-2025-07-15 ✅</option>
+                            <option value="qwen-tts-2025-05-22">qwen-tts-2025-05-22 ✅</option>
+                            <option value="qwen-tts-latest">qwen-tts-latest ✅</option>
+                            <option value="qwen3-tts-flash-realtime">qwen3-tts-flash-realtime ✅</option>
+                        </select>
+                        <label class="form-label mb-0" style="white-space:nowrap;">音色</label>
+                        <select class="form-select form-select-sm" id="ttsVoice" style="width:120px;">
+                            <option value="Cherry">Cherry (英文女声)</option>
+                            <option value="Ethan">Ethan (英文男声)</option>
+                        </select>
                     </div>
                 </div>
             </div>
@@ -303,10 +325,18 @@ function sendText() {
     const interrupt = document.getElementById('txtInterrupt').checked;
     if (!text || !sessionid) return alert('请先连接 WebRTC');
 
+    const ttsModel = document.getElementById('ttsModel').value;
+    const ttsVoice = document.getElementById('ttsVoice').value;
+    const body = { text, type, interrupt, sessionid: String(sessionid) };
+    const tts = {};
+    if (ttsModel !== 'qwen-tts-realtime-latest') tts.model = ttsModel;
+    if (ttsVoice !== 'Cherry') tts.ref_file = ttsVoice;
+    if (Object.keys(tts).length > 0) body.tts = tts;
+
     fetch('/human', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, type, interrupt, sessionid: String(sessionid) }),
+        body: JSON.stringify(body),
     }).then(r => r.json()).then(d => {
         console.log('human:', d);
         document.getElementById('txtMessage').value = '';
