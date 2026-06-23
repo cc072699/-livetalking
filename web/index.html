@@ -800,7 +800,7 @@ function _connectLocalASR(onReady) {
 
                         localASR.pendingText = text;
                         showVoiceTranscript(text, false);
-                        console.log('[ASR] result:', text, '| voiceWaitingForReply:', voiceWaitingForReply);
+                        console.log('[ASR] result:', text, '| mode:', localASR.mode, '| voiceWaitingForReply:', voiceWaitingForReply);
 
                         if (!isValidVoiceInput(text)) {
                             console.log('[ASR] rejected by isValidVoiceInput');
@@ -823,9 +823,21 @@ function _connectLocalASR(onReady) {
                             return;
                         }
 
+                        // PTT 模式：ASR 结果可能在 pttEnd() 之前到达
+                        // 先存到 pendingText，不设 voiceLastFinalText（避免 pttEnd 重复检测误杀）
+                        // 如果 pendingResolve 已设置（pttEnd 先于 ASR 结果），直接 resolve
+                        if (localASR.mode === 'ptt') {
+                            if (localASR.pendingResolve) {
+                                localASR.pendingResolve(text);
+                                localASR.pendingResolve = null;
+                            }
+                            // 不设 voiceLastFinalText，等 sendVoiceText 统一设置
+                            return;
+                        }
+
                         voiceLastFinalText = text;
 
-                        // Resolve pending PTT promise
+                        // Resolve pending PTT promise (fallback, should not normally reach here)
                         if (localASR.pendingResolve) {
                             localASR.pendingResolve(text);
                             localASR.pendingResolve = null;
@@ -1204,6 +1216,7 @@ function sendVoiceText(text, interrupt) {
     }
     voiceWaitingForReply = true;
     voiceLastSentText = text;
+    voiceLastFinalText = text;  // 标记为已处理，防止重复
     console.log('[Voice] sendVoiceText:', text.substring(0, 50));
     showVoiceStatus(true, '⏳', '处理中...');
     appendVoiceChatLog('user', text);
