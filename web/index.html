@@ -1046,6 +1046,13 @@ function pttStart() {
     // Clear any previous waiting state so new input is not discarded
     _clearVoiceWaiting();
 
+    // 重置回声过滤状态，避免上次对话的文字阻止本次识别
+    voiceLastFinalText = '';
+    voiceLastSentText = '';
+    localASR.pendingText = '';
+
+    console.log('[PTT] start');
+
     // Interrupt any ongoing avatar speech
     fetch('/interrupt_talk', {
         method: 'POST',
@@ -1080,15 +1087,18 @@ function pttEnd() {
     document.getElementById('pttButton').className = 'btn-primary-custom w-100 py-3 fs-5';
     document.getElementById('pttButton').textContent = '🎤 按住说话';
 
-    // Stop local ASR capture and get result
-    if (localASR.ready && localASR.captureActive) {
-        showVoiceStatus(true, '⏳', '处理中...');
+    showVoiceStatus(true, '⏳', '处理中...');
+
+    // 无论 captureActive 状态如何，都停止采集并等待 ASR 结果
+    // （自由对话模式的 VAD 可能已提前将 captureActive 设为 false）
+    if (localASR.ready && localASR.ws && localASR.ws.readyState === WebSocket.OPEN) {
         stopCapture();
 
         new Promise((resolve) => {
             localASR.pendingResolve = resolve;
             setTimeout(() => {
                 if (localASR.pendingResolve) {
+                    console.log('[PTT] ASR result timeout, using pendingText:', localASR.pendingText);
                     localASR.pendingResolve(localASR.pendingText || '');
                     localASR.pendingResolve = null;
                 }
@@ -1096,8 +1106,10 @@ function pttEnd() {
         }).then(text => {
             if (text && isValidVoiceInput(text)) {
                 showVoiceStatus(true, '📝', '识别完成');
+                console.log('[PTT] sending:', text.substring(0, 50));
                 sendVoiceText(text, false);
             } else {
+                console.log('[PTT] no valid speech detected, text:', JSON.stringify(text));
                 showVoiceStatus(true, '⏳', '未检测到语音');
                 setTimeout(() => showVoiceStatus(false), 1500);
             }
