@@ -548,8 +548,10 @@ let localASR = {
 };
 
 const VOICE_MAX_RESTART = 3;
-const VOICE_ECHO_COOLDOWN_MS = 2000;
+const VOICE_ECHO_COOLDOWN_MS = 5000;  // 5秒冷却（原2秒太短，数字人多句输出时回声循环）
 const VOICE_TEXT_MIN_LENGTH = 3;
+let _avatarSpeaking = false;           // 数字人是否正在说话
+let _avatarSpeakEndTime = 0;           // 数字人停止说话的时间戳
 
 // ─── Voice Mode Switch ──────────────────────────────────────
 function onVoiceModeChange() {
@@ -1181,6 +1183,20 @@ function _restartFreeListening() {
     // If already capturing, no action needed
     if (localASR.captureActive) return;
 
+    // 数字人正在说话或刚说完（冷却期内），不重启 ASR（防回声循环）
+    if (_avatarSpeaking) {
+        console.log('[Voice] blocked: avatar still speaking');
+        setTimeout(() => _restartFreeListening(), 2000);
+        return;
+    }
+    const sinceSpeak = Date.now() - _avatarSpeakEndTime;
+    if (_avatarSpeakEndTime > 0 && sinceSpeak < VOICE_ECHO_COOLDOWN_MS) {
+        const remain = VOICE_ECHO_COOLDOWN_MS - sinceSpeak;
+        console.log('[Voice] blocked: echo cooldown,', Math.ceil(remain / 1000), 's remaining');
+        setTimeout(() => _restartFreeListening(), remain);
+        return;
+    }
+
     // If connection is still alive, just start capture (which sends is_speaking:true)
     if (localASR.ready && localASR.ws && localASR.ws.readyState === WebSocket.OPEN) {
         showVoiceStatus(true, '🎤', '聆听中...');
@@ -1279,9 +1295,17 @@ function pollSpeakingEnd() {
             // Handle both old (boolean) and new (object) response format
             const speaking = typeof d.data === 'boolean' ? d.data : (d.data && d.data.speaking);
             const llmPending = d.data && typeof d.data === 'object' && d.data.llm_pending;
-            if (speaking) avatarEverSpoke = true;
+            if (speaking) {
+                avatarEverSpoke = true;
+                _avatarSpeaking = true;
+            }
 
             if (!speaking) {
+                if (_avatarSpeaking) {
+                    _avatarSpeaking = false;
+                    _avatarSpeakEndTime = Date.now();
+                }
+
                 if (avatarEverSpoke) {
                     // Avatar finished speaking — normal end
                     _clearVoiceWaiting();
