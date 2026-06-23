@@ -383,15 +383,15 @@ class BaseAvatar:
             starttime = time.perf_counter()
             audiofeat_batch = []
             try:
-                audiofeat_batch = self.asr.feat_queue.get(block=True, timeout=0.05)
+                audiofeat_batch = self.asr.feat_queue.get(block=True, timeout=1)
             except queue.Empty:
                 continue
-                
+
             is_all_silence = True
             audio_frames: list[AudioFrameData] = []
             try:
                 for _ in range(self.batch_size * 2):
-                    audioframe:AudioFrameData = self.asr.output_queue.get(timeout=1.0)
+                    audioframe:AudioFrameData = self.asr.output_queue.get(timeout=5.0)
                     if audioframe.type == 0:
                         is_all_silence = False
                     audio_frames.append(audioframe)
@@ -453,7 +453,7 @@ class BaseAvatar:
         while not quit_event.is_set():
             try:
                 audio_frames: list[AudioFrameData]
-                res_frame,audio_frames,idx = self.res_frame_queue.get(block=True, timeout=0.05)
+                res_frame,audio_frames,idx = self.res_frame_queue.get(block=True, timeout=1)
             except queue.Empty:
                 continue
             

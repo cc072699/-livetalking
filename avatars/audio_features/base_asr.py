@@ -43,7 +43,7 @@ class BaseASR:
         self.stride_left_size = opt.l
         self.stride_right_size = opt.r
         #self.context_size = 10
-        self.feat_queue = Queue(maxsize=2)
+        self.feat_queue = Queue(maxsize=5)
 
         #self.warm_up()
 
