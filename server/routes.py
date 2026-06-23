@@ -158,6 +158,7 @@ async def is_speaking(request):
     return json_ok(data={
         "speaking": avatar_session.is_speaking(),
         "llm_pending": getattr(avatar_session, '_llm_pending', False),
+        "recent_texts": getattr(avatar_session, '_recent_spoken_texts', []),
     })
 
 

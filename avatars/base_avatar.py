@@ -265,6 +265,13 @@ class BaseAvatar:
     def notify(self, eventpoint:dict):
         if eventpoint and eventpoint.get('status'):
             logger.info("notify:%s", eventpoint)
+            # 记录数字人最近说的话（供前端回声检测）
+            if eventpoint.get('status') == 'start' and eventpoint.get('text'):
+                if not hasattr(self, '_recent_spoken_texts'):
+                    self._recent_spoken_texts = []
+                self._recent_spoken_texts.append(eventpoint['text'])
+                if len(self._recent_spoken_texts) > 10:
+                    self._recent_spoken_texts = self._recent_spoken_texts[-10:]
 
     def start_recording(self):
         if self.recording:

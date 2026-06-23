@@ -548,10 +548,12 @@ let localASR = {
 };
 
 const VOICE_MAX_RESTART = 3;
-const VOICE_ECHO_COOLDOWN_MS = 5000;  // 5秒冷却（原2秒太短，数字人多句输出时回声循环）
+const VOICE_ECHO_COOLDOWN_MS = 2000;   // 安全兜底冷却（回声检测成功时不受此限制）
 const VOICE_TEXT_MIN_LENGTH = 3;
 let _avatarSpeaking = false;           // 数字人是否正在说话
 let _avatarSpeakEndTime = 0;           // 数字人停止说话的时间戳
+let _avatarRecentTexts = [];           // 数字人最近说的话（用于回声检测）
+const AVATAR_TEXT_HISTORY_MAX = 10;    // 最多记住最近 N 句
 
 // ─── Voice Mode Switch ──────────────────────────────────────
 function onVoiceModeChange() {
@@ -812,8 +814,11 @@ function _connectLocalASR(onReady) {
                                 localASR.captureActive = false;
                                 if (text.length < VOICE_TEXT_MIN_LENGTH) {
                                     _restartAfterSilence();
+                                } else {
+                                    // 回声被拒绝：立即重新开始监听（不等冷却）
+                                    console.log('[Echo] rejected, restarting listen immediately');
+                                    setTimeout(() => _restartFreeListening(), 500);
                                 }
-                                // Echo/duplicate: let cooldown timer handle restart
                             }
                             return;
                         }
@@ -1151,6 +1156,13 @@ function isValidVoiceInput(text) {
         console.log('[Echo Reject] similar to last sent:', text);
         return false;
     }
+    // 回声检测：ASR 结果与数字人最近说的话相似 → 判定为回声
+    for (const avatarText of _avatarRecentTexts) {
+        if (isTextSimilar(text, avatarText)) {
+            console.log('[Echo Reject] matches avatar speech:', text, '~', avatarText.substring(0, 30));
+            return false;
+        }
+    }
     return true;
 }
 
@@ -1183,16 +1195,17 @@ function _restartFreeListening() {
     // If already capturing, no action needed
     if (localASR.captureActive) return;
 
-    // 数字人正在说话或刚说完（冷却期内），不重启 ASR（防回声循环）
+    // 数字人正在说话，不重启 ASR
     if (_avatarSpeaking) {
         console.log('[Voice] blocked: avatar still speaking');
-        setTimeout(() => _restartFreeListening(), 2000);
+        setTimeout(() => _restartFreeListening(), 1000);
         return;
     }
+    // 数字人刚说完不到 2 秒，等待回声消散
     const sinceSpeak = Date.now() - _avatarSpeakEndTime;
     if (_avatarSpeakEndTime > 0 && sinceSpeak < VOICE_ECHO_COOLDOWN_MS) {
         const remain = VOICE_ECHO_COOLDOWN_MS - sinceSpeak;
-        console.log('[Voice] blocked: echo cooldown,', Math.ceil(remain / 1000), 's remaining');
+        console.log('[Voice] echo cooldown,', Math.ceil(remain / 1000), 's remaining');
         setTimeout(() => _restartFreeListening(), remain);
         return;
     }
@@ -1295,6 +1308,12 @@ function pollSpeakingEnd() {
             // Handle both old (boolean) and new (object) response format
             const speaking = typeof d.data === 'boolean' ? d.data : (d.data && d.data.speaking);
             const llmPending = d.data && typeof d.data === 'object' && d.data.llm_pending;
+
+            // 更新数字人最近说的话（用于回声检测）
+            if (d.data && d.data.recent_texts) {
+                _avatarRecentTexts = d.data.recent_texts;
+            }
+
             if (speaking) {
                 avatarEverSpoke = true;
                 _avatarSpeaking = true;
