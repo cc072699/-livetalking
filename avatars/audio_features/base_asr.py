@@ -47,8 +47,19 @@ class BaseASR:
 
         #self.warm_up()
 
+    def _clear_queue(self, q):
+        """清空 queue.Queue 中的所有元素"""
+        while not q.empty():
+            try:
+                q.get_nowait()
+            except queue.Empty:
+                break
+
     def flush_talk(self):
         self.queue.queue.clear()
+        self._clear_queue(self.output_queue)
+        self._clear_queue(self.feat_queue)
+        self.frames = []
 
     def put_audio_frame(self,audio_chunk:NDArray[np.float32],datainfo:dict): #16khz 20ms pcm
         self.queue.put(AudioFrameData(data=audio_chunk,type=0,userdata=datainfo))

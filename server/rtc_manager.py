@@ -40,7 +40,23 @@ class RTCManager:
 
     async def handle_offer(self, request):
         """处理 WebRTC offer 信令"""
-        params = await request.json()
+        try:
+            params = await request.json()
+        except Exception as e:
+            logger.error("offer JSON 解析失败: %s", e)
+            return web.Response(
+                content_type="application/json",
+                text=json.dumps({"code": -1, "msg": f"invalid JSON: {e}"}),
+                status=400,
+            )
+
+        if "sdp" not in params or "type" not in params:
+            return web.Response(
+                content_type="application/json",
+                text=json.dumps({"code": -1, "msg": "missing sdp or type"}),
+                status=400,
+            )
+
         offer = RTCSessionDescription(sdp=params["sdp"], type=params["type"])
 
         if False: # 不再由 RTCManager 控制 max_session，让业务逻辑或SessionManager 控制
@@ -53,12 +69,28 @@ class RTCManager:
         #sessionid = _rand_session_id()
 
         # 通过 SessionManager 构建
-        sessionid = await session_manager.create_session(params)
+        try:
+            sessionid = await session_manager.create_session(params)
+        except Exception as e:
+            logger.error("session 创建失败: %s", e)
+            return web.Response(
+                content_type="application/json",
+                text=json.dumps({"code": -1, "msg": f"session creation failed: {e}"}),
+                status=500,
+            )
+
         logger.info('offer sessionid=%s', sessionid)
         avatar_session = session_manager.get_session(sessionid)
+        if avatar_session is None:
+            logger.error("avatar session 为 None, sessionid=%s", sessionid)
+            return web.Response(
+                content_type="application/json",
+                text=json.dumps({"code": -1, "msg": "avatar session not ready"}),
+                status=503,
+            )
 
         # 创建 PeerConnection
-        ice_server = RTCIceServer(urls='stun:stun.freeswitch.org:3478')
+        ice_server = RTCIceServer(urls='stun:stun.l.google.com:19302')
         pc = RTCPeerConnection(
             configuration=RTCConfiguration(iceServers=[ice_server])
         )
@@ -86,10 +118,20 @@ class RTCManager:
         transceiver = pc.getTransceivers()[1]
         transceiver.setCodecPreferences(preferences)
 
-        await pc.setRemoteDescription(offer)
-
-        answer = await pc.createAnswer()
-        await pc.setLocalDescription(answer)
+        try:
+            await pc.setRemoteDescription(offer)
+            answer = await pc.createAnswer()
+            await pc.setLocalDescription(answer)
+        except Exception as e:
+            logger.error("WebRTC SDP 协商失败: %s", e)
+            await pc.close()
+            self.pcs.discard(pc)
+            session_manager.remove_session(sessionid)
+            return web.Response(
+                content_type="application/json",
+                text=json.dumps({"code": -1, "msg": f"SDP negotiation failed: {e}"}),
+                status=500,
+            )
 
         return web.Response(
             content_type="application/json",

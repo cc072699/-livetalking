@@ -43,10 +43,10 @@ def parse_args():
                         help="custom action json")
 
     # ─── TTS ───────────────────────────────────────────────────────────
-    parser.add_argument('--tts', type=str, default='dashscopetts',
+    parser.add_argument('--tts', type=str, default='qwentts',
                         help="tts plugin: edgetts/gpt-sovits/cosyvoice/fishtts/tencent/doubao/indextts2/azuretts/qwentts/dashscopetts")
-    parser.add_argument('--REF_FILE', type=str, default="longxiaochun",
-                        help="参考文件名或语音模型ID")
+    parser.add_argument('--REF_FILE', type=str, default="Cherry",
+                        help="参考文件名或语音模型ID (qwentts 音色名, 如 Cherry/Ethan)")
     parser.add_argument('--REF_TEXT', type=str, default=None)
     parser.add_argument('--TTS_SERVER', type=str, default='http://127.0.0.1:9880')
     parser.add_argument('--tts_speed', type=float, default=1.0,

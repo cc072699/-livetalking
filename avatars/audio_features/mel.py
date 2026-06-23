@@ -28,6 +28,7 @@ from queue import Queue
 
 from avatars.audio_features.base_asr import BaseASR
 from avatars.wav2lip import audio
+from utils.logger import logger
 
 class MelASR(BaseASR):
 
@@ -61,7 +62,10 @@ class MelASR(BaseASR):
             else:
                 mel_chunks.append(mel[:, start_idx : start_idx + mel_step_size])
             i += 1
-        self.feat_queue.put(mel_chunks)
+        try:
+            self.feat_queue.put(mel_chunks, timeout=1.0)
+        except queue.Full:
+            logger.warning('[MelASR] feat_queue full, dropping mel_chunks')
         
         # discard the old part to save memory
         self.frames = self.frames[-(self.stride_left_size + self.stride_right_size):]

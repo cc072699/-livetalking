@@ -12,6 +12,7 @@
 #  Licensed under the Apache License, Version 2.0
 ###############################################################################
 
+import os
 import json
 import time
 import io
@@ -31,6 +32,9 @@ def _load_sensevoice():
     """
     Load the SenseVoice model on first call (lazy singleton).
     Thread-safe via the GIL — only one thread will enter the init block.
+
+    Models are loaded from local directory (models/asr/) to avoid downloading
+    from ModelScope on every startup.
     """
     global _sensevoice_model
     if _sensevoice_model is not None:
@@ -40,15 +44,35 @@ def _load_sensevoice():
     from funasr import AutoModel
 
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
+
+    # Local model paths - avoids downloading from ModelScope
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    sensevoice_path = os.path.join(base_dir, "models", "asr", "SenseVoiceSmall")
+    vad_path = os.path.join(base_dir, "models", "asr", "speech_fsmn_vad_zh-cn-16k-common-pytorch")
+
+    # Check if local models exist
+    if not os.path.exists(sensevoice_path):
+        logger.warning(f"[ASR] Local SenseVoice model not found at {sensevoice_path}, will download from ModelScope")
+        sensevoice_model_id = "iic/SenseVoiceSmall"
+    else:
+        sensevoice_model_id = sensevoice_path
+        logger.info(f"[ASR] Using local SenseVoice model: {sensevoice_path}")
+
+    if not os.path.exists(vad_path):
+        logger.warning(f"[ASR] Local VAD model not found at {vad_path}, will download from ModelScope")
+        vad_model_id = "fsmn-vad"
+    else:
+        vad_model_id = vad_path
+        logger.info(f"[ASR] Using local VAD model: {vad_path}")
+
     logger.info(
-        f"[ASR] Loading SenseVoiceSmall on device='{device}' "
-        f"(first run will download ~500MB from ModelScope)..."
+        f"[ASR] Loading SenseVoiceSmall on device='{device}' ..."
     )
 
     t0 = time.perf_counter()
     _sensevoice_model = AutoModel(
-        model="iic/SenseVoiceSmall",
-        vad_model="fsmn-vad",
+        model=sensevoice_model_id,
+        vad_model=vad_model_id,
         vad_kwargs={"max_single_segment_time": 30000},
         device=device,
         trust_remote_code=True,
@@ -143,6 +167,9 @@ async def asr_websocket_handler(request):
     config: dict = {}
     session_start = time.perf_counter()
     chunks_received = 0
+    total_bytes_received = 0
+
+    logger.info(f"[ASR] 🔌 WebSocket connected from {client_ip}, waiting for messages...")
 
     try:
         async for msg in ws:
@@ -233,6 +260,7 @@ async def asr_websocket_handler(request):
             elif msg.type == web.WSMsgType.BINARY:
                 audio_buffer.extend(msg.data)
                 chunks_received += 1
+                total_bytes_received += len(msg.data)
 
             elif msg.type in (web.WSMsgType.ERROR, web.WSMsgType.CLOSE):
                 break
@@ -242,7 +270,7 @@ async def asr_websocket_handler(request):
     except Exception as e:
         logger.exception(f"[ASR] ❌ WebSocket handler error: {e}")
 
-    logger.info(f"[ASR] 🔌 WebSocket disconnected ({client_ip})")
+    logger.info(f"[ASR] 🔌 WebSocket disconnected ({client_ip}) | total_bytes={total_bytes_received}, chunks={chunks_received}")
     return ws
 
 

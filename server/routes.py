@@ -62,8 +62,16 @@ async def human(request):
         elif params['type'] == 'chat':
             llm_response = request.app.get("llm_response")
             if llm_response:
+                avatar_session._llm_pending = True
+                def _llm_wrapper(*args, **kwargs):
+                    try:
+                        llm_response(*args, **kwargs)
+                    except Exception as e:
+                        logger.exception('[LLM] wrapper exception:')
+                    finally:
+                        avatar_session._llm_pending = False
                 asyncio.get_event_loop().run_in_executor(
-                    None, llm_response, params['text'], avatar_session, datainfo
+                    None, _llm_wrapper, params['text'], avatar_session, datainfo
                 )
 
         return json_ok()
@@ -147,7 +155,10 @@ async def is_speaking(request):
     avatar_session = get_session(request, sessionid)
     if avatar_session is None:
         return json_error("session not found")
-    return json_ok(data=avatar_session.is_speaking())
+    return json_ok(data={
+        "speaking": avatar_session.is_speaking(),
+        "llm_pending": getattr(avatar_session, '_llm_pending', False),
+    })
 
 
 async def admin_config(request):

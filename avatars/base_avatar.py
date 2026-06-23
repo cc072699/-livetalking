@@ -222,7 +222,18 @@ class BaseAvatar:
             self.tts.flush_talk()
         if hasattr(self, 'asr') and hasattr(self.asr, 'flush_talk'):
             self.asr.flush_talk()
-        self.custom_audiotype = 0  
+        # 清空推理结果队列
+        while not self.res_frame_queue.empty():
+            try:
+                self.res_frame_queue.get_nowait()
+            except queue.Empty:
+                break
+        # 清空输出队列（WebRTC HumanPlayer 等）
+        if hasattr(self, 'output') and hasattr(self.output, 'flush'):
+            self.output.flush()
+        self.custom_audiotype = 0
+        self.speaking = False
+        self._current_subtitle = ""
 
     # def flush(self):
     #     self.flush_talk()
@@ -365,17 +376,21 @@ class BaseAvatar:
             starttime = time.perf_counter()
             audiofeat_batch = []
             try:
-                audiofeat_batch = self.asr.feat_queue.get(block=True, timeout=1)
+                audiofeat_batch = self.asr.feat_queue.get(block=True, timeout=0.05)
             except queue.Empty:
                 continue
                 
             is_all_silence = True
             audio_frames: list[AudioFrameData] = []
-            for _ in range(self.batch_size * 2):
-                audioframe:AudioFrameData = self.asr.output_queue.get()
-                if audioframe.type == 0:
-                    is_all_silence = False               
-                audio_frames.append(audioframe)
+            try:
+                for _ in range(self.batch_size * 2):
+                    audioframe:AudioFrameData = self.asr.output_queue.get(timeout=1.0)
+                    if audioframe.type == 0:
+                        is_all_silence = False
+                    audio_frames.append(audioframe)
+            except queue.Empty:
+                logger.warning('inference: output_queue.get() timed out, skipping batch')
+                continue
 
              # 检测状态变化
             current_speaking = not is_all_silence
@@ -390,7 +405,16 @@ class BaseAvatar:
                     index = 0
                 t = time.perf_counter()
 
-                pred = self.inference_batch(index, audiofeat_batch)
+                try:
+                    pred = self.inference_batch(index, audiofeat_batch)
+                except Exception as e:
+                    logger.error(f'inference_batch failed: {e}')
+                    # Put silence frames to keep pipeline alive
+                    for i in range(self.batch_size):
+                        idx = mirror_index(length, index)
+                        self.res_frame_queue.put((None, audio_frames[i*2:i*2+2], idx))
+                        index = index + 1
+                    continue
 
                 counttime += (time.perf_counter() - t)
                 count += self.batch_size
@@ -422,7 +446,7 @@ class BaseAvatar:
         while not quit_event.is_set():
             try:
                 audio_frames: list[AudioFrameData]
-                res_frame,audio_frames,idx = self.res_frame_queue.get(block=True, timeout=1)
+                res_frame,audio_frames,idx = self.res_frame_queue.get(block=True, timeout=0.05)
             except queue.Empty:
                 continue
             
@@ -567,8 +591,12 @@ class BaseAvatar:
         logger.info('baseavatar render thread stop')
 
         infer_quit_event.set()
-        infer_thread.join()
+        infer_thread.join(timeout=3.0)
+        if infer_thread.is_alive():
+            logger.warning('inference thread did not exit in time')
 
         process_quit_event.set()
-        process_thread.join()
+        process_thread.join(timeout=3.0)
+        if process_thread.is_alive():
+            logger.warning('process_frames thread did not exit in time')
 

@@ -4,12 +4,16 @@
 #
 
 import time
+import logging
+import queue as queue_mod
 import torch
 import numpy as np
 from avatars.audio_features.base_asr import BaseASR
 from avatars.ultralight.audio2feature import Audio2Feature
 
 # hubert audio feature
+logger = logging.getLogger(__name__)
+
 class HubertASR(BaseASR):
     #audio_feat_length: select audio feature before and after
     def __init__(self, opt, parent, audio_processor:Audio2Feature, audio_feat_length=[8,8]):
@@ -44,7 +48,10 @@ class HubertASR(BaseASR):
                                             audio_feat_win = self.audio_feat_length, start=self.stride_left_size/2,
                                             feature_idx_multiplier=2)
 
-        self.feat_queue.put(mel_chunks)
+        try:
+            self.feat_queue.put(mel_chunks, timeout=1)
+        except queue_mod.Full:
+            logger.warning("HubertASR feat_queue full, dropping frame")
         self.frames = self.frames[-(self.stride_left_size + self.stride_right_size):]
         self.last_is_silence = is_all_silence
         #print(f"Processing audio costs {(time.time() - start_time) * 1000}ms")

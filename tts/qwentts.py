@@ -23,6 +23,7 @@ except ImportError:
 
 SRC_SR = 24000   # Qwen TTS 只支持 24kHz 输出
 DST_SR = 16000   # 项目标准采样率
+TTS_RESPONSE_TIMEOUT = 10  # 等待 TTS 响应的超时秒数（原来 60s 会阻塞整条管线）
 
 
 @register("tts", "qwentts")
@@ -88,6 +89,12 @@ class QwenTTS(BaseTTS):
             logger.info(f"QwenTTS WebSocket 关闭: code={close_status_code}, msg={close_msg}")
             self._ref._response_event.set()
 
+        def on_error(self, error) -> None:
+            """SDK 回调：WebSocket 错误（含 Idle timeout 等服务端断连）"""
+            self._ref._ws_connected = False
+            logger.warning(f"QwenTTS WebSocket 错误: {error}")
+            self._ref._response_event.set()
+
         def on_event(self, response: dict) -> None:
             try:
                 event_type = response.get('type', '')
@@ -112,20 +119,24 @@ class QwenTTS(BaseTTS):
         """初始化 / 重建 QwenTtsRealtime 客户端（使用 self.model / self.voice / self.speech_rate）"""
         self._remainder = np.array([], dtype=np.float32)
         self._callback = self._Callback(self)
-        self._tts_client = QwenTtsRealtime(
-            model=self.model,
-            callback=self._callback,
-            url=self.ws_url,
-        )
-        self._tts_client.connect()
-        self._tts_client.update_session(
-            voice=self.voice,
-            response_format=AudioFormat.PCM_24000HZ_MONO_16BIT,
-            sample_rate=24000,
-            mode='commit',
-            speech_rate=self.speech_rate,
-        )
-        logger.info(f"QwenTTS 初始化完成: model={self.model}, voice={self.voice}, speech_rate={self.speech_rate}")
+        try:
+            self._tts_client = QwenTtsRealtime(
+                model=self.model,
+                callback=self._callback,
+                url=self.ws_url,
+            )
+            self._tts_client.connect()
+            self._tts_client.update_session(
+                voice=self.voice,
+                response_format=AudioFormat.PCM_24000HZ_MONO_16BIT,
+                sample_rate=24000,
+                mode='commit',
+                speech_rate=self.speech_rate,
+            )
+            logger.info(f"QwenTTS 初始化完成: model={self.model}, voice={self.voice}, speech_rate={self.speech_rate}")
+        except Exception as e:
+            logger.error(f"QwenTTS 连接建立失败: {e}")
+            self._ws_connected = False
 
     def _rebuild_client(self, model: str = None, voice: str = None, speed: float = None):
         """关闭旧连接，用新参数重建 QwenTtsRealtime 客户端"""
@@ -172,7 +183,6 @@ class QwenTTS(BaseTTS):
         self._response_event.clear()
 
         try:
-            #logger.info(f"QwenTTS 发送文本: {text[:80]}...")
             speed = float(textevent.get('tts', {}).get('speed', self.speech_rate))
             new_model = textevent.get('tts', {}).get('model', self.model)
 
@@ -197,20 +207,39 @@ class QwenTTS(BaseTTS):
                     )
                     logger.info(f"QwenTTS reconnected: voice={self.voice}, speech_rate={self.speech_rate}")
             elif not self._ws_connected:
-                # 服务端在每次合成后断开连接，自动重建
+                # 连接已断开（Idle timeout / 服务端关闭），自动重建
                 self._build_client()
                 logger.info("QwenTTS auto-reconnected after server close")
-            self._tts_client.append_text(text)
-            self._tts_client.commit()
+
+            # 发送文本，失败时重连重试一次
+            try:
+                self._tts_client.append_text(text)
+                self._tts_client.commit()
+            except Exception as send_err:
+                logger.warning(f"QwenTTS 发送失败({send_err})，重连重试")
+                self._ws_connected = False
+                self._build_client()
+                self._response_event.clear()
+                self._tts_client.append_text(text)
+                self._tts_client.commit()
 
             # 等待 response.done（音频在回调中流式处理）
-            self._response_event.wait(timeout=60)
+            # 使用较短超时避免阻塞整条管线；超时后尝试重连
+            if not self._response_event.wait(timeout=TTS_RESPONSE_TIMEOUT):
+                logger.warning(f"QwenTTS 响应超时({TTS_RESPONSE_TIMEOUT}s)，尝试重连")
+                self._ws_connected = False
+                try:
+                    self._build_client()
+                except Exception as rebuild_err:
+                    logger.error(f"QwenTTS 重连失败: {rebuild_err}")
 
             t_end = time.perf_counter()
             logger.info(f"QwenTTS 合成完成，耗时: {t_end - t_start:.2f}s")
 
         except Exception as e:
             logger.exception(f"QwenTTS txt_to_audio 异常: {e}")
+            # 异常后标记连接断开，下次自动重连
+            self._ws_connected = False
 
     # ========================== 流式音频处理（回调中调用）==========================
 

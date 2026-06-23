@@ -26,6 +26,7 @@ import queue
 from queue import Queue
 from avatars.audio_features.base_asr import BaseASR
 from avatars.musetalk.whisper.audio2feature import Audio2Feature
+from utils.logger import logger
 
 class WhisperASR(BaseASR):
     def __init__(self, opt, parent, audio_processor:Audio2Feature):
@@ -71,6 +72,9 @@ class WhisperASR(BaseASR):
         whisper_chunks = self._feature2chunks(feature_array=whisper_feature,batch_size=self.batch_size,
                                               audio_feat_win = [0,5],start=self.stride_left_size/2,
                                               feature_idx_multiplier=2)
-        self.feat_queue.put(whisper_chunks)
+        try:
+            self.feat_queue.put(whisper_chunks, timeout=1.0)
+        except queue.Full:
+            logger.warning('[WhisperASR] feat_queue full, dropping whisper_chunks')
         # discard the old part to save memory
         self.frames = self.frames[-(self.stride_left_size + self.stride_right_size):]

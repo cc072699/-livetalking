@@ -125,6 +125,13 @@ class LipReal(BaseAvatar):
             img_batch.append(face)
         img_batch, audiofeat_batch = np.asarray(img_batch), np.asarray(audiofeat_batch)
 
+        # Clamp audiofeat_batch to batch_size to prevent tensor size mismatch
+        if len(audiofeat_batch) > self.batch_size:
+            audiofeat_batch = audiofeat_batch[:self.batch_size]
+        elif len(audiofeat_batch) < self.batch_size:
+            pad = np.zeros((self.batch_size - len(audiofeat_batch),) + audiofeat_batch.shape[1:], dtype=audiofeat_batch.dtype)
+            audiofeat_batch = np.concatenate([audiofeat_batch, pad], axis=0)
+
         img_masked = img_batch.copy()
         img_masked[:, face.shape[0]//2:] = 0
 

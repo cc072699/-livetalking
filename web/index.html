@@ -74,6 +74,26 @@
         .param-hint { font-size: 0.75rem; color: #94a3b8; }
         ::placeholder { color: #9ca3af !important; opacity: 1; }
         :-ms-input-placeholder { color: #9ca3af; }
+        .voice-transcript {
+            background: rgba(67, 97, 238, 0.06);
+            border-radius: 8px;
+            padding: 10px 14px;
+            min-height: 40px;
+            font-size: 0.9rem;
+            color: #334155;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+        .voice-chat-log {
+            max-height: 200px;
+            overflow-y: auto;
+            font-size: 0.85rem;
+            padding: 8px 0;
+        }
+        .voice-chat-log .msg-user { color: var(--primary); margin-bottom: 4px; }
+        .voice-chat-log .msg-user::before { content: '🗣️ '; }
+        .voice-chat-log .msg-avatar { color: #64748b; margin-bottom: 8px; }
+        .voice-chat-log .msg-avatar::before { content: '🤖 '; }
     </style>
 </head>
 <body>
@@ -163,7 +183,31 @@
 
         <!-- Right Column: Drivers + Actions -->
         <div class="col-lg-5">
-            <!-- 2. Text Driver -->
+            <!-- 2. Voice Conversation -->
+            <div class="glass-card">
+                <div class="card-header"><i class="bi bi-mic-fill"></i> 语音对话</div>
+                <div class="card-body">
+                    <div id="voiceStatusBar" class="small text-muted mb-2" style="display:none;">
+                        <span id="voiceStatusIcon">🎤</span>
+                        <span id="voiceStatusText">聆听中...</span>
+                    </div>
+                    <div class="d-flex gap-2 align-items-center mb-2">
+                        <select class="form-select form-select-sm" id="voiceMode" onchange="onVoiceModeChange()" style="width:130px;">
+                            <option value="off">🎙️ 关闭</option>
+                            <option value="free">💬 自由对话</option>
+                            <option value="ptt">🎤 按住说话</option>
+                        </select>
+                        <button class="btn-outline-custom btn-sm" onclick="interrupt()"><i class="bi bi-stop-circle"></i> 打断</button>
+                    </div>
+                    <div id="pttContainer" style="display:none;" class="mb-2">
+                        <button id="pttButton" class="btn-primary-custom w-100 py-3 fs-5" onmousedown="pttStart()" onmouseup="pttEnd()" ontouchstart="pttStart()" ontouchend="pttEnd()">🎤 按住说话</button>
+                    </div>
+                    <div id="voiceTranscript" class="voice-transcript mb-2" style="display:none;"></div>
+                    <div id="voiceChatLog" class="voice-chat-log"></div>
+                </div>
+            </div>
+
+            <!-- 3. Text Driver -->
             <div class="glass-card">
                 <div class="card-header"><i class="bi bi-chat-text-fill"></i> 文本驱动 (POST /human)</div>
                 <div class="card-body">
@@ -262,6 +306,10 @@ function setSessionId(sid) {
 }
 
 // ─── WebRTC ────────────────────────────────────────────────
+let _reconnectAttempts = 0;
+const RECONNECT_MAX = 3;
+const RECONNECT_BASE_DELAY = 2000; // ms, exponential backoff
+
 function negotiate() {
     pc.addTransceiver('video', { direction: 'recvonly' });
     pc.addTransceiver('audio', { direction: 'recvonly' });
@@ -286,29 +334,72 @@ function negotiate() {
     }).then(res => res.json()).then(answer => {
         if (answer.sessionid) setSessionId(answer.sessionid);
         return pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: answer.sdp }));
-    }).catch(e => console.error('Negotiation error:', e));
+    }).then(() => {
+        _reconnectAttempts = 0; // 连接成功，重置重试计数
+    }).catch(e => {
+        console.error('Negotiation error:', e);
+        throw e; // 向上传播，让重连逻辑捕获
+    });
 }
 
-function start() {
-    const config = { sdpSemantics: 'unified-plan' };
-    if (document.getElementById('use-stun')?.checked) {
-        config.iceServers = [{ urls: 'stun:stun.l.google.com:19302' }];
+function _attemptReconnect() {
+    if (_reconnectAttempts >= RECONNECT_MAX) {
+        console.warn('WebRTC 重连失败，已达最大重试次数');
+        updateStatus(false);
+        setSessionId(null);
+        document.getElementById('btnStart').style.display = 'inline-block';
+        document.getElementById('btnStop').style.display = 'none';
+        return;
     }
+    _reconnectAttempts++;
+    const delay = RECONNECT_BASE_DELAY * Math.pow(2, _reconnectAttempts - 1);
+    console.log(`WebRTC 重连 (${_reconnectAttempts}/${RECONNECT_MAX})，${delay}ms 后重试...`);
+    setTimeout(() => {
+        try {
+            if (pc) { try { pc.close(); } catch(e) {} pc = null; }
+            _setupConnection();
+            negotiate().catch(() => _attemptReconnect());
+        } catch(e) {
+            console.error('重连异常:', e);
+            _attemptReconnect();
+        }
+    }, delay);
+}
+
+function _setupConnection() {
+    const config = {
+        sdpSemantics: 'unified-plan',
+        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+    };
     pc = new RTCPeerConnection(config);
     pc.addEventListener('track', evt => {
         if (evt.track.kind === 'video') document.getElementById('video').srcObject = evt.streams[0];
         else document.getElementById('audio').srcObject = evt.streams[0];
     });
     pc.addEventListener('connectionstatechange', () => {
-        if (pc.connectionState === 'connected') updateStatus(true);
-        else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') { updateStatus(false); setSessionId(null); }
+        if (pc.connectionState === 'connected') {
+            updateStatus(true);
+            _reconnectAttempts = 0;
+        } else if (pc.connectionState === 'disconnected') {
+            console.warn('WebRTC 连接断开，尝试自动重连...');
+            _attemptReconnect();
+        } else if (pc.connectionState === 'failed') {
+            console.error('WebRTC 连接失败，尝试自动重连...');
+            _attemptReconnect();
+        }
     });
+}
+
+function start() {
+    _reconnectAttempts = 0;
+    _setupConnection();
     negotiate();
     document.getElementById('btnStart').style.display = 'none';
     document.getElementById('btnStop').style.display = 'inline-block';
 }
 
 function stop() {
+    _reconnectAttempts = RECONNECT_MAX; // 阻止自动重连
     if (pc) { pc.close(); pc = null; }
     updateStatus(false);
     setSessionId(null);
@@ -415,6 +506,819 @@ function setAudiotype() {
         body: JSON.stringify({ audiotype: val, sessionid: String(sessionid) }),
     }).then(r => r.json()).then(d => console.log('set_audiotype:', d));
 }
+
+// ─── Voice Interaction (Free + Push-to-Talk) ─────────────────
+// State
+let voiceMode = 'off';
+let voiceRecognition = null;
+let voiceEnabled = false;
+let voicePollTimer = null;
+let voiceLastFinalText = '';
+let voiceWaitingForReply = false;
+let voiceRestartCount = 0;
+let voiceCooldownTimer = null;
+let voiceLastSentText = '';
+let voiceWaitingTimeout = null;
+const VOICE_WAITING_MAX_MS = 60000;   // Max total waiting time for reply
+const VOICE_WAITING_START_MS = 10000; // Max time before avatar starts speaking
+
+// Unified local ASR state
+let localASR = {
+    ws: null,
+    stream: null,
+    audioCtx: null,
+    source: null,
+    processor: null,
+    captureActive: false,    // true = sending audio frames to WebSocket
+    mode: null,              // 'free' or 'ptt'
+    pendingResolve: null,    // Promise resolve for pending result
+    pendingText: '',         // Accumulated result text
+    ready: false,            // true = WebSocket + mic are ready
+    closing: false,          // Prevent re-entrant close
+    // VAD state
+    vadSilenceMs: 0,
+    vadSpeechDetected: false,
+    vadStartTime: 0,
+    vadConfig: {
+        silenceThreshold: 0.01,   // RMS amplitude below this = silence
+        silenceDurationMs: 1500,  // 1.5s silence after speech → trigger ASR
+        minSpeechMs: 300,         // ignore speech shorter than 300ms (noise)
+        maxCaptureMs: 30000,      // safety limit: 30s max capture
+    },
+};
+
+const VOICE_MAX_RESTART = 3;
+const VOICE_ECHO_COOLDOWN_MS = 2000;
+const VOICE_TEXT_MIN_LENGTH = 3;
+
+// ─── Voice Mode Switch ──────────────────────────────────────
+function onVoiceModeChange() {
+    const newMode = document.getElementById('voiceMode').value;
+    if (newMode === voiceMode) return;
+
+    stopVoiceMode();
+    voiceMode = newMode;
+    document.getElementById('pttContainer').style.display = (newMode === 'ptt') ? 'block' : 'none';
+
+    if (newMode === 'off') return;
+    if (!sessionid) { alert('请先连接 WebRTC'); resetVoiceMode(); return; }
+
+    const hasSpeechRecog = 'webkitSpeechRecognition' in window || 'SpeechRecognition' in window;
+
+    voiceEnabled = true;
+
+    if (newMode === 'free') {
+        showVoiceStatus(true, '🎤', '启动中...');
+        if (hasSpeechRecog) {
+            startFreeRecognition();
+        } else {
+            warmupLocalASR('free', () => {
+                if (voiceMode === 'free' && voiceEnabled) {
+                    startCapture();
+                    showVoiceStatus(true, '🎤', '聆听中...');
+                }
+            });
+        }
+    } else if (newMode === 'ptt') {
+        showVoiceStatus(true, '⏳', '准备麦克风...');
+        warmupLocalASR('ptt', () => {
+            if (voiceMode === 'ptt') {
+                showVoiceStatus(false);
+            }
+        });
+    }
+}
+
+function resetVoiceMode() {
+    stopVoiceMode();
+    voiceMode = 'off';
+    document.getElementById('voiceMode').value = 'off';
+    document.getElementById('pttContainer').style.display = 'none';
+}
+
+// ─── Free Conversation Mode ──────────────────────────────────
+function startFreeRecognition() {
+    if (!voiceEnabled || voiceWaitingForReply) return;
+
+    try {
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        voiceRecognition = new SpeechRecognition();
+        voiceRecognition.continuous = true;
+        voiceRecognition.interimResults = true;
+        voiceRecognition.lang = 'zh-CN';
+
+        voiceRecognition.onresult = function(event) {
+            let finalText = '';
+            let interimText = '';
+
+            for (let i = event.resultIndex; i < event.results.length; ++i) {
+                if (event.results[i].isFinal) {
+                    finalText += event.results[i][0].transcript;
+                } else {
+                    interimText += event.results[i][0].transcript;
+                }
+            }
+
+            if (interimText) {
+                showVoiceTranscript(finalText || interimText, true);
+                showVoiceStatus(true, '📝', '识别中...');
+            }
+
+            if (finalText) {
+                const text = finalText.trim();
+                showVoiceTranscript(text, false);
+
+                // Echo/noise rejection
+                if (!isValidVoiceInput(text)) return;
+                voiceLastFinalText = text;
+
+                // Stop recognition while processing
+                if (voiceRecognition) {
+                    try { voiceRecognition.stop(); } catch(e) {}
+                    voiceRecognition = null;
+                }
+
+                if (voiceWaitingForReply) {
+                    showVoiceStatus(true, '⏳', '打断中...');
+                    fetch('/interrupt_talk', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ sessionid: String(sessionid) }),
+                    }).then(() => sendVoiceText(text, true))
+                      .catch(() => sendVoiceText(text, true));
+                } else {
+                    sendVoiceText(text, true);
+                }
+            }
+        };
+
+        voiceRecognition.onerror = function(event) {
+            console.error('语音识别错误:', event.error);
+            if (event.error === 'aborted') return;
+
+            if (event.error === 'audio-capture' || event.error === 'no-speech') {
+                showVoiceStatus(true, '⚠️', event.error === 'audio-capture' ? '未检测到麦克风' : '语音识别不可用');
+                setTimeout(() => resetVoiceMode(), 2000);
+                return;
+            }
+
+            // Google service blocked (common in China) → fallback to local ASR
+            if (event.error === 'network') {
+                console.log('SpeechRecognition network error, falling back to local ASR');
+                showVoiceStatus(true, '🔄', '切换到本地语音识别...');
+                if (voiceRecognition) {
+                    try { voiceRecognition.stop(); } catch(e) {}
+                    voiceRecognition = null;
+                }
+                warmupLocalASR('free', () => {
+                    if (voiceMode === 'free' && voiceEnabled) {
+                        startCapture();
+                        showVoiceStatus(true, '🎤', '聆听中...（本地ASR）');
+                    }
+                });
+                return;
+            }
+
+            if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+                showVoiceStatus(true, '⏳', '请求麦克风权限...');
+                voiceRecognition = null;
+                _requestMicPermission().then(granted => {
+                    if (granted && voiceEnabled && !voiceWaitingForReply && !voiceCooldownTimer) {
+                        startFreeRecognition();
+                    }
+                });
+                return;
+            }
+
+            if (voiceEnabled && !voiceWaitingForReply) {
+                voiceRestartCount++;
+                if (voiceRestartCount <= VOICE_MAX_RESTART) {
+                    setTimeout(() => startFreeRecognition(), 500);
+                } else {
+                    showVoiceStatus(true, '⚠️', '识别异常');
+                    setTimeout(() => resetVoiceMode(), 2000);
+                }
+            }
+        };
+
+        voiceRecognition.onend = function() {
+            if (voiceEnabled && !voiceWaitingForReply && !voiceCooldownTimer) {
+                startFreeRecognition();
+            }
+        };
+
+        voiceRecognition.start();
+    } catch (e) {
+        console.error('启动语音识别失败:', e);
+        // Fallback to local ASR
+        warmupLocalASR('free', () => {
+            if (voiceMode === 'free' && voiceEnabled) {
+                startCapture();
+                showVoiceStatus(true, '🎤', '聆听中...（本地ASR）');
+            }
+        });
+    }
+}
+
+// ─── Microphone Permission ───────────────────────────────────
+function _requestMicPermission() {
+    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+        return navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+            stream.getTracks().forEach(t => t.stop());
+            return true;
+        }).catch(err => {
+            console.error('麦克风权限请求失败:', err.name, err.message);
+            if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+                alert('麦克风权限被拒绝。请按以下步骤操作：\n\n1. 点击浏览器地址栏左侧的 🔒 图标\n2. 找到"麦克风"，改为"允许"\n3. 刷新页面后重试');
+            } else if (err.name === 'NotFoundError') {
+                alert('未检测到麦克风设备。请检查：\n\n1. 是否连接了麦克风\n2. macOS 系统设置 → 隐私 → 麦克风 → 允许 Chrome');
+            } else {
+                alert(`麦克风访问失败 (${err.name})，请检查系统音频设置后重试`);
+            }
+            return false;
+        });
+    }
+    alert('当前浏览器不支持麦克风访问，请使用 Chrome 或 Edge 浏览器');
+    return Promise.resolve(false);
+}
+// ─── Unified Local ASR ──────────────────────────────────────
+function warmupLocalASR(mode, onReady) {
+    if (localASR.ready && localASR.mode === mode && localASR.ws && localASR.ws.readyState === WebSocket.OPEN) {
+        if (onReady) onReady();
+        return;
+    }
+
+    localASR.closing = false;
+    localASR.mode = mode;
+    localASR.captureActive = false;
+    localASR.pendingText = '';
+
+    _requestMicPermission().then(granted => {
+        if (!granted || !voiceEnabled) { resetVoiceMode(); return; }
+        _connectLocalASR(onReady);
+    });
+}
+
+function _connectLocalASR(onReady) {
+    try {
+        navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+            if (!voiceEnabled) { stream.getTracks().forEach(t => t.stop()); return; }
+
+            localASR.stream = stream;
+            const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            localASR.ws = new WebSocket(`${protocol}//${location.host}/api/asr`);
+
+            localASR.ws.onopen = () => {
+                if (!voiceEnabled) { _teardownLocalASR(); return; }
+                localASR.ws.send(JSON.stringify({
+                    chunk_size: [5, 10, 5],
+                    wav_name: "h5",
+                    is_speaking: true,
+                    mode: "2pass",
+                    itn: true,
+                }));
+                _setupAudioCapture(stream);
+                localASR.ready = true;
+                if (onReady) onReady();
+            };
+
+            localASR.ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.is_final) {
+                        const text = (data.text || '').trim();
+
+                        // ASR 返回空文本：VAD 检测到的不是有效语音，重启监听
+                        if (!text) {
+                            console.log('[ASR] result: (empty), restarting...');
+                            if (localASR.mode === 'free' && voiceEnabled && !voiceWaitingForReply) {
+                                localASR.captureActive = false;
+                                _restartAfterSilence();
+                            }
+                            return;
+                        }
+
+                        localASR.pendingText = text;
+                        showVoiceTranscript(text, false);
+                        console.log('[ASR] result:', text, '| voiceWaitingForReply:', voiceWaitingForReply);
+
+                        if (!isValidVoiceInput(text)) {
+                            console.log('[ASR] rejected by isValidVoiceInput');
+                            if (localASR.mode === 'free' && voiceEnabled && !voiceWaitingForReply) {
+                                // Pause capture. Debounced restart prevents infinite loop
+                                // when VAD triggers on silence → ASR returns empty → restart.
+                                localASR.captureActive = false;
+                                if (text.length < VOICE_TEXT_MIN_LENGTH) {
+                                    _restartAfterSilence();
+                                }
+                                // Echo/duplicate: let cooldown timer handle restart
+                            }
+                            return;
+                        }
+
+                        // CRITICAL: discard if waiting for reply (echo protection)
+                        if (voiceWaitingForReply) {
+                            console.log('[Echo] discard ASR result while waiting for reply');
+                            if (localASR.mode === 'free') localASR.captureActive = false;
+                            return;
+                        }
+
+                        voiceLastFinalText = text;
+
+                        // Resolve pending PTT promise
+                        if (localASR.pendingResolve) {
+                            localASR.pendingResolve(text);
+                            localASR.pendingResolve = null;
+                        }
+
+                        // Free mode: pause capture, keep connection alive for next turn
+                        if (localASR.mode === 'free') {
+                            localASR.captureActive = false;
+                            sendVoiceText(text, true);
+                        }
+                    }
+                } catch(e) { /* binary data — ignore */ }
+            };
+
+            localASR.ws.onerror = (err) => {
+                console.error('本地ASR WebSocket错误:', err);
+                if (!voiceEnabled) { resetVoiceMode(); return; }
+                showVoiceStatus(true, '⚠️', 'ASR连接错误，尝试重连...');
+                _teardownLocalASR();
+                // In free mode, auto-reconnect instead of giving up
+                if (voiceMode === 'free' && voiceEnabled) {
+                    setTimeout(() => {
+                        if (voiceEnabled && voiceMode === 'free') {
+                            _restartFreeListening();
+                        }
+                    }, 1000);
+                } else {
+                    setTimeout(() => resetVoiceMode(), 2000);
+                }
+            };
+
+            localASR.ws.onclose = () => {
+                _teardownAudioCapture();
+                localASR.ready = false;
+                if (localASR.pendingResolve) {
+                    localASR.pendingResolve('');
+                    localASR.pendingResolve = null;
+                }
+                // Auto-restart in free mode if connection drops unexpectedly
+                if (voiceEnabled && voiceMode === 'free' && !voiceWaitingForReply) {
+                    setTimeout(() => {
+                        if (voiceEnabled && voiceMode === 'free') {
+                            _restartFreeListening();
+                        }
+                    }, 500);
+                }
+            };
+        }).catch(err => {
+            console.error('获取麦克风失败:', err);
+            resetVoiceMode();
+        });
+    } catch(e) {
+        console.error('启动本地ASR失败:', e);
+        resetVoiceMode();
+    }
+}
+
+function _setupAudioCapture(stream) {
+    // Just store the stream for later. AudioContext is created in startCapture()
+    // where we have a user gesture context (needed for AudioContext.resume()).
+    localASR.stream = stream;
+}
+
+function _ensureAudioContext() {
+    if (localASR.audioCtx) return;
+    if (!localASR.stream) return;
+    try {
+        const SAMPLE_RATE = 16000;
+        localASR.audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
+        localASR.source = localASR.audioCtx.createMediaStreamSource(localASR.stream);
+        localASR.processor = localASR.audioCtx.createScriptProcessor(4096, 1, 1);
+        localASR.source.connect(localASR.processor);
+        // ScriptProcessor must be connected to destination for onaudioprocess to fire.
+        // Use a silent gain node to avoid playing mic audio through speakers.
+        const silentGain = localASR.audioCtx.createGain();
+        silentGain.gain.value = 0;
+        localASR.processor.connect(silentGain);
+        silentGain.connect(localASR.audioCtx.destination);
+
+        localASR.processor.onaudioprocess = (e) => {
+            if (!localASR.captureActive) return;
+            if (!localASR.ws || localASR.ws.readyState !== WebSocket.OPEN) return;
+            const input = e.inputBuffer.getChannelData(0);
+
+            // ── VAD: compute RMS amplitude ──
+            let sum = 0;
+            for (let i = 0; i < input.length; i++) sum += input[i] * input[i];
+            const rms = Math.sqrt(sum / input.length);
+            const chunkMs = (input.length / localASR.audioCtx.sampleRate) * 1000;
+            const cfg = localASR.vadConfig;
+
+            if (rms > cfg.silenceThreshold) {
+                // Speech detected
+                localASR.vadSpeechDetected = true;
+                localASR.vadSilenceMs = 0;
+            } else {
+                // Silence
+                localASR.vadSilenceMs += chunkMs;
+            }
+
+            const elapsedMs = Date.now() - localASR.vadStartTime;
+
+            // In PTT mode, don't auto-stop — user controls stop via button release
+            if (localASR.mode !== 'ptt') {
+                // Free mode: auto-stop on silence after speech, or max capture time
+                if ((localASR.vadSpeechDetected && localASR.vadSilenceMs >= cfg.silenceDurationMs && elapsedMs >= cfg.minSpeechMs) ||
+                    elapsedMs >= cfg.maxCaptureMs) {
+                    localASR.captureActive = false;
+                    stopCapture();
+                    return; // Don't send this trailing silence chunk
+                }
+            } else if (elapsedMs >= cfg.maxCaptureMs) {
+                // PTT mode: only auto-stop at max capture limit (30s)
+                localASR.captureActive = false;
+                stopCapture();
+                return;
+            }
+
+            // Send audio to ASR server
+            const pcm16 = new Int16Array(input.length);
+            for (let i = 0; i < input.length; i++) {
+                pcm16[i] = Math.max(-32768, Math.min(32767, Math.round(input[i] * 32768)));
+            }
+            localASR.ws.send(pcm16.buffer);
+        };
+    } catch(e) { console.error('音频上下文创建失败:', e); }
+}
+
+function _teardownAudioCapture() {
+    if (localASR.processor) { localASR.processor.disconnect(); localASR.processor = null; }
+    if (localASR.source) { localASR.source.disconnect(); localASR.source = null; }
+    if (localASR.audioCtx) { localASR.audioCtx.close().catch(() => {}); localASR.audioCtx = null; }
+    if (localASR.stream) { localASR.stream.getTracks().forEach(t => t.stop()); localASR.stream = null; }
+}
+
+function _teardownLocalASR() {
+    if (localASR.closing) return;
+    localASR.closing = true;
+    localASR.captureActive = false;
+    if (localASR.ws) {
+        try { localASR.ws.close(); } catch(e) {}
+        localASR.ws = null;
+    }
+    _teardownAudioCapture();
+    localASR.ready = false;
+    localASR.mode = null;
+    setTimeout(() => { localASR.closing = false; }, 100);
+}
+
+function _resumeASRSession() {
+    if (localASR.ws && localASR.ws.readyState === WebSocket.OPEN) {
+        try {
+            localASR.ws.send(JSON.stringify({
+                chunk_size: [5, 10, 5], wav_name: "h5",
+                is_speaking: true, mode: "2pass", itn: true,
+            }));
+        } catch(e) {}
+    }
+}
+
+function startCapture() {
+    if (!localASR.ready || !localASR.ws || localASR.ws.readyState !== WebSocket.OPEN) return;
+    if (!localASR.stream) return;
+
+    // Create AudioContext on demand (needs user gesture for resume to work)
+    _ensureAudioContext();
+    localASR.captureActive = true;
+
+    // Reset VAD state
+    localASR.vadSilenceMs = 0;
+    localASR.vadSpeechDetected = false;
+    localASR.vadStartTime = Date.now();
+
+    const doStart = () => {
+        // Always start a fresh ASR session (server resets its buffer on each is_speaking:true)
+        _resumeASRSession();
+    };
+
+    // Resume AudioContext (Chrome suspends it when created outside user gesture)
+    if (localASR.audioCtx && localASR.audioCtx.state === 'suspended') {
+        localASR.audioCtx.resume().then(doStart).catch(e => {
+            console.error('AudioContext resume failed:', e);
+            localASR.captureActive = false;
+            showVoiceStatus(true, '⚠️', '请点击页面后重试');
+            // One-time click listener to retry
+            const retry = () => {
+                document.removeEventListener('click', retry);
+                if (localASR.audioCtx && localASR.audioCtx.state === 'suspended') {
+                    localASR.audioCtx.resume().then(() => {
+                        if (voiceMode !== 'off' && voiceEnabled) startCapture();
+                    }).catch(() => {});
+                }
+            };
+            document.addEventListener('click', retry);
+        });
+    } else {
+        doStart();
+    }
+}
+
+function stopCapture() {
+    localASR.captureActive = false;
+    if (localASR.ws && localASR.ws.readyState === WebSocket.OPEN) {
+        try { localASR.ws.send(JSON.stringify({ is_speaking: false })); } catch(e) {}
+    }
+}
+
+// ─── Push-to-Talk Mode ──────────────────────────────────────
+let _pttActive = false;
+
+function pttStart() {
+    if (!sessionid) return;
+    _pttActive = true;
+
+    document.getElementById('pttButton').className = 'btn-danger-custom w-100 py-3 fs-5';
+    document.getElementById('pttButton').textContent = '✋ 松开发送';
+
+    // Clear any previous waiting state so new input is not discarded
+    _clearVoiceWaiting();
+
+    // Interrupt any ongoing avatar speech
+    fetch('/interrupt_talk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionid: String(sessionid) }),
+    }).catch(() => {});
+
+    // Always use local ASR for PTT (pre-warmed, no Google SpeechRecognition issues)
+    _startPTTLocal();
+}
+
+function _startPTTLocal() {
+    if (localASR.ready && localASR.ws && localASR.ws.readyState === WebSocket.OPEN) {
+        localASR.mode = 'ptt';
+        startCapture();
+        showVoiceStatus(true, '🎤', '请说话...');
+        return;
+    }
+    showVoiceStatus(true, '⏳', '启动本地语音识别...');
+    warmupLocalASR('ptt', () => {
+        if (localASR.ready && voiceEnabled) {
+            startCapture();
+            showVoiceStatus(true, '🎤', '请说话...');
+        }
+    });
+}
+
+function pttEnd() {
+    if (!_pttActive) return;
+    _pttActive = false;
+
+    document.getElementById('pttButton').className = 'btn-primary-custom w-100 py-3 fs-5';
+    document.getElementById('pttButton').textContent = '🎤 按住说话';
+
+    // Stop local ASR capture and get result
+    if (localASR.ready && localASR.captureActive) {
+        showVoiceStatus(true, '⏳', '处理中...');
+        stopCapture();
+
+        new Promise((resolve) => {
+            localASR.pendingResolve = resolve;
+            setTimeout(() => {
+                if (localASR.pendingResolve) {
+                    localASR.pendingResolve(localASR.pendingText || '');
+                    localASR.pendingResolve = null;
+                }
+            }, 5000);
+        }).then(text => {
+            if (text && isValidVoiceInput(text)) {
+                showVoiceStatus(true, '📝', '识别完成');
+                sendVoiceText(text, false);
+            } else {
+                showVoiceStatus(true, '⏳', '未检测到语音');
+                setTimeout(() => showVoiceStatus(false), 1500);
+            }
+        });
+        return;
+    }
+
+    showVoiceStatus(false);
+}
+
+// Global listeners: stop PTT if mouse/touch released anywhere on the page
+document.addEventListener('mouseup', () => { if (_pttActive) pttEnd(); });
+document.addEventListener('touchend', () => { if (_pttActive) pttEnd(); });
+document.addEventListener('touchcancel', () => { if (_pttActive) pttEnd(); });
+
+// ─── Shared Voice Functions ──────────────────────────────────
+function isValidVoiceInput(text) {
+    if (!text || text.length < VOICE_TEXT_MIN_LENGTH) return false;
+    if (text === voiceLastFinalText) return false;
+    if (text === voiceLastSentText) {
+        console.log('[Echo Reject] matches last sent:', text);
+        return false;
+    }
+    if (voiceLastSentText && isTextSimilar(text, voiceLastSentText)) {
+        console.log('[Echo Reject] similar to last sent:', text);
+        return false;
+    }
+    return true;
+}
+
+function isTextSimilar(a, b) {
+    if (!a || !b) return false;
+    const aWords = a.toLowerCase().replace(/[^\w一-鿿]/g, ' ').split(/\s+/).filter(Boolean);
+    const bWords = b.toLowerCase().replace(/[^\w一-鿿]/g, ' ').split(/\s+/).filter(Boolean);
+    if (aWords.length < 2 || bWords.length < 2) return false;
+    const short = aWords.length <= bWords.length ? aWords : bWords;
+    const long = aWords.length > bWords.length ? aWords : bWords;
+    const match = short.filter(w => long.includes(w)).length;
+    return match / short.length >= 0.7;
+}
+
+function startVoiceCooldown() {
+    if (voiceCooldownTimer) { clearTimeout(voiceCooldownTimer); voiceCooldownTimer = null; }
+    const jitter = VOICE_ECHO_COOLDOWN_MS * (0.8 + Math.random() * 0.4);
+    voiceCooldownTimer = setTimeout(() => {
+        voiceCooldownTimer = null;
+        if (voiceMode === 'free' && voiceEnabled && !voiceWaitingForReply) {
+            _restartFreeListening();
+        }
+    }, jitter);
+    showVoiceStatus(true, '🔇', '冷却中...');
+}
+
+function _restartFreeListening() {
+    if (!voiceEnabled || voiceWaitingForReply) return;
+
+    // If already capturing, no action needed
+    if (localASR.captureActive) return;
+
+    // If connection is still alive, just start capture (which sends is_speaking:true)
+    if (localASR.ready && localASR.ws && localASR.ws.readyState === WebSocket.OPEN) {
+        showVoiceStatus(true, '🎤', '聆听中...');
+        startCapture();
+        return;
+    }
+
+    // Connection lost — full warmup needed
+    showVoiceStatus(true, '🎤', '聆听中...（重新连接）');
+    warmupLocalASR('free', () => {
+        if (voiceMode === 'free' && voiceEnabled && !voiceWaitingForReply) startCapture();
+    });
+}
+
+let _silenceRestartTimer = null;
+function _restartAfterSilence() {
+    // Restart listening after an empty/noise ASR result.
+    // Debounced to prevent VAD→ASR→empty→restart infinite loops.
+    if (!voiceEnabled || voiceMode !== 'free' || voiceWaitingForReply) return;
+    if (_silenceRestartTimer) return; // Already pending
+    _silenceRestartTimer = setTimeout(() => {
+        _silenceRestartTimer = null;
+        if (voiceEnabled && voiceMode === 'free' && !voiceWaitingForReply) {
+            _restartFreeListening();
+        }
+    }, 500);
+}
+
+function sendVoiceText(text, interrupt) {
+    if (!text || !sessionid) {
+        console.warn('[Voice] sendVoiceText blocked:', { text: !!text, sessionid });
+        return;
+    }
+    voiceWaitingForReply = true;
+    voiceLastSentText = text;
+    console.log('[Voice] sendVoiceText:', text.substring(0, 50));
+    showVoiceStatus(true, '⏳', '处理中...');
+    appendVoiceChatLog('user', text);
+    showVoiceTranscript('', false);
+
+    // Start total timeout — if reply never comes, recover
+    if (voiceWaitingTimeout) clearTimeout(voiceWaitingTimeout);
+    voiceWaitingTimeout = setTimeout(() => {
+        if (voiceWaitingForReply) {
+            console.warn('[Voice] Total reply timeout — recovering');
+            _clearVoiceWaiting();
+            appendVoiceChatLog('avatar', '(回复超时)');
+            if (voiceMode === 'free' && voiceEnabled) _restartFreeListening();
+        }
+    }, VOICE_WAITING_MAX_MS);
+
+    const type = document.getElementById('txtType').value;
+    fetch('/human', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, type, interrupt, sessionid: String(sessionid) }),
+    }).then(r => r.json()).then(d => {
+        console.log('[Voice] /human response:', d);
+        if (d.code !== 0) {
+            console.error('voice send error:', d);
+            _clearVoiceWaiting();
+            if (voiceMode === 'free' && voiceEnabled) startVoiceCooldown();
+            return;
+        }
+        if (voiceMode === 'free') pollSpeakingEnd();
+    }).catch(e => {
+        console.error('voice send error:', e);
+        _clearVoiceWaiting();
+        if (voiceMode === 'free' && voiceEnabled) startVoiceCooldown();
+    });
+}
+
+function _clearVoiceWaiting() {
+    voiceWaitingForReply = false;
+    if (voiceWaitingTimeout) { clearTimeout(voiceWaitingTimeout); voiceWaitingTimeout = null; }
+    if (voicePollTimer) { clearInterval(voicePollTimer); voicePollTimer = null; }
+}
+
+function pollSpeakingEnd() {
+    if (!voiceEnabled || !sessionid) return;
+    showVoiceStatus(true, '🔊', '说话中...');
+    const pollStartTime = Date.now();
+    let avatarEverSpoke = false;
+
+    voicePollTimer = setInterval(() => {
+        if (!voiceEnabled || !sessionid) {
+            _clearVoiceWaiting();
+            return;
+        }
+        fetch('/is_speaking', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionid: String(sessionid) }),
+        }).then(r => r.json()).then(d => {
+            // Handle both old (boolean) and new (object) response format
+            const speaking = typeof d.data === 'boolean' ? d.data : (d.data && d.data.speaking);
+            const llmPending = d.data && typeof d.data === 'object' && d.data.llm_pending;
+            if (speaking) avatarEverSpoke = true;
+
+            if (!speaking) {
+                if (avatarEverSpoke) {
+                    // Avatar finished speaking — normal end
+                    _clearVoiceWaiting();
+                    voiceRestartCount = 0;
+                    appendVoiceChatLog('avatar', '(回复完成)');
+                    if (voiceMode === 'free' && voiceEnabled) startVoiceCooldown();
+                } else if (!llmPending && Date.now() - pollStartTime > VOICE_WAITING_START_MS) {
+                    // LLM finished but avatar never spoke — error
+                    console.warn('[Voice] LLM done but avatar never spoke');
+                    _clearVoiceWaiting();
+                    appendVoiceChatLog('avatar', '(未收到回复)');
+                    if (voiceMode === 'free' && voiceEnabled) _restartFreeListening();
+                }
+            }
+        }).catch(() => {});
+    }, 500);
+}
+
+function showVoiceStatus(show, icon, text) {
+    const bar = document.getElementById('voiceStatusBar');
+    const iconEl = document.getElementById('voiceStatusIcon');
+    const textEl = document.getElementById('voiceStatusText');
+    if (show) { bar.style.display = 'block'; iconEl.textContent = icon; textEl.textContent = text; }
+    else { bar.style.display = 'none'; }
+}
+
+function showVoiceTranscript(text, interim) {
+    const el = document.getElementById('voiceTranscript');
+    if (!text) { el.style.display = 'none'; el.textContent = ''; return; }
+    el.style.display = 'block';
+    el.textContent = text;
+    el.style.opacity = interim ? '0.6' : '1';
+}
+
+function appendVoiceChatLog(role, text) {
+    const log = document.getElementById('voiceChatLog');
+    const div = document.createElement('div');
+    div.className = role === 'user' ? 'msg-user' : 'msg-avatar';
+    div.textContent = text;
+    log.appendChild(div);
+    log.scrollTop = log.scrollHeight;
+}
+
+function stopVoiceMode() {
+    voiceEnabled = false;
+    voiceWaitingForReply = false;
+    voiceRestartCount = 0;
+    if (voiceRecognition) { try { voiceRecognition.stop(); } catch(e) {} voiceRecognition = null; }
+    _teardownLocalASR();
+    if (voiceCooldownTimer) { clearTimeout(voiceCooldownTimer); voiceCooldownTimer = null; }
+    if (voiceWaitingTimeout) { clearTimeout(voiceWaitingTimeout); voiceWaitingTimeout = null; }
+    if (_silenceRestartTimer) { clearTimeout(_silenceRestartTimer); _silenceRestartTimer = null; }
+    if (voicePollTimer) { clearInterval(voicePollTimer); voicePollTimer = null; }
+    showVoiceStatus(false);
+}
+
+// Override stop() to also stop voice mode
+const _origStop = stop;
+stop = function() {
+    try { if (voiceMode !== 'off') resetVoiceMode(); } catch(e) { console.error('voice cleanup error:', e); }
+    _origStop();
+};
 
 </script>
 </body>

@@ -40,6 +40,7 @@ AUDIO_TIME_BASE = fractions.Fraction(1, SAMPLE_RATE)
 from aiortc import (
     MediaStreamTrack,
 )
+from aiortc.mediastreams import MediaStreamError
 
 logging.basicConfig()
 logger = logging.getLogger(__name__)
@@ -68,7 +69,7 @@ class PlayerStreamTrack(MediaStreamTrack):
 
     async def next_timestamp(self) -> Tuple[int, fractions.Fraction]:
         if self.readyState != "live":
-            raise Exception
+            raise MediaStreamError("track is not live")
 
         if self.kind == 'video':
             if hasattr(self, "_timestamp"):
@@ -108,31 +109,33 @@ class PlayerStreamTrack(MediaStreamTrack):
                 mylogger.info('audio start:%f',self._start)
             return self._timestamp, AUDIO_TIME_BASE
 
+    # 队列等待超时：超过此时间无新帧则发送静音帧，避免阻塞 aiortc 事件循环
+    QUEUE_WAIT_TIMEOUT = 15.0  # 秒
+
     async def recv(self) -> Union[Frame, Packet]:
-        # frame = self.frames[self.counter % 30]            
+        # frame = self.frames[self.counter % 30]
         self._player._start(self)
-        # if self.kind == 'video':
-        #     frame = await self._queue.get()
-        # else: #audio
-        #     if hasattr(self, "_timestamp"):
-        #         wait = self._start + self._timestamp / SAMPLE_RATE + AUDIO_PTIME - time.time()
-        #         if wait>0:
-        #             await asyncio.sleep(wait)
-        #         if self._queue.qsize()<1:
-        #             #frame = AudioFrame(format='s16', layout='mono', samples=320)
-        #             audio = np.zeros((1, 320), dtype=np.int16)
-        #             frame = AudioFrame.from_ndarray(audio, layout='mono', format='s16')
-        #             frame.sample_rate=16000
-        #         else:
-        #             frame = await self._queue.get()
-        #     else:
+        frame = None
+        eventpoint = None
+        wait_start = time.monotonic()
         while True:
             try:
                 frame, eventpoint = self._queue.get_nowait()
                 break
             except queue.Empty:
+                elapsed = time.monotonic() - wait_start
+                if elapsed >= self.QUEUE_WAIT_TIMEOUT:
+                    # 超时：渲染管线停滞，发送静音/空帧保持连接存活
+                    if self.kind == 'audio':
+                        audio = np.zeros((1, 320), dtype=np.int16)
+                        frame = AudioFrame.from_ndarray(audio, layout='mono', format='s16')
+                        frame.sample_rate = SAMPLE_RATE
+                    else:
+                        # 视频超时意味着连接已死，抛出异常让 aiortc 关闭轨道
+                        raise MediaStreamError("video track: no frame received within timeout")
+                    break
                 await asyncio.sleep(0.005)
-                
+
         pts, time_base = await self.next_timestamp()
         frame.pts = pts
         frame.time_base = time_base
@@ -140,7 +143,7 @@ class PlayerStreamTrack(MediaStreamTrack):
             self._player.notify(eventpoint)
         if frame is None:
             self.stop()
-            raise Exception
+            raise MediaStreamError("frame is None after recv")
         if self.kind == 'video':
             self.totaltime += (time.perf_counter() - self.lasttime)
             self.framecount += 1
@@ -186,6 +189,19 @@ class HumanPlayer:
         self.__container = avatar_session
         if hasattr(self.__container, 'output'):
             self.__container.output._player = self
+
+    def flush(self):
+        """清空音视频队列（用于打断时立即停止旧内容播放）"""
+        while not self.__audio._queue.empty():
+            try:
+                self.__audio._queue.get_nowait()
+            except queue.Empty:
+                break
+        while not self.__video._queue.empty():
+            try:
+                self.__video._queue.get_nowait()
+            except queue.Empty:
+                break
 
     def push_video(self, frame):
         from av import VideoFrame
@@ -241,7 +257,9 @@ class HumanPlayer:
         if not self.__started and self.__thread is not None:
             self.__log_debug("Stopping worker thread")
             self.__thread_quit.set()
-            self.__thread.join()
+            self.__thread.join(timeout=3.0)
+            if self.__thread.is_alive():
+                self.__log_debug("Worker thread did not exit in time, detaching")
             self.__thread = None
 
         if not self.__started and self.__container is not None:

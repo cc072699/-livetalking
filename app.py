@@ -16,13 +16,8 @@
 ###############################################################################
 
 # server.py
-from flask import Flask, render_template,send_from_directory,request, jsonify
-#from flask_sockets import Sockets
 import base64
 import json
-#import gevent
-#from gevent import pywsgi
-#from geventwebsocket.handler import WebSocketHandler
 import re
 import os
 import numpy as np
@@ -56,8 +51,6 @@ import gc
 from dotenv import load_dotenv
 
 
-app = Flask(__name__)
-#sockets = Sockets(app)
 opt = None
 model = None
 global_avatars = {} # avatar_id: payload
