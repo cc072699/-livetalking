@@ -53,7 +53,7 @@ def parse_args():
                         help="TTS 语速, 1.0 正常, <1 变慢, >1 变快")
 
     # ─── Qwen TTS ────────────────────────────────────────────────────
-    parser.add_argument('--qwen_tts_model', type=str, default='qwen3-tts-flash-realtime',
+    parser.add_argument('--qwen_tts_model', type=str, default='qwen-tts-realtime-latest',
                         help="Qwen TTS model name (for qwentts plugin)")
 
     # ─── 字幕 ─────────────────────────────────────────────────────────
