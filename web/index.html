@@ -94,6 +94,72 @@
         .voice-chat-log .msg-user::before { content: '🗣️ '; }
         .voice-chat-log .msg-avatar { color: #64748b; margin-bottom: 8px; }
         .voice-chat-log .msg-avatar::before { content: '🤖 '; }
+
+        /* Fullscreen wrapper */
+        .video-fs-wrapper { position: relative; display: inline-block; width: 100%; }
+        .video-fs-wrapper:fullscreen,
+        .video-fs-wrapper:-webkit-full-screen {
+            display: flex; align-items: center; justify-content: center;
+            background: #000; width: 100vw; height: 100vh;
+        }
+        .video-fs-wrapper:fullscreen video,
+        .video-fs-wrapper:-webkit-full-screen video {
+            max-width: 100%; max-height: 100vh; width: auto; height: auto; border-radius: 0;
+        }
+        /* Side panel: absolute overlay on the right */
+        .video-fs-wrapper:fullscreen .fs-side-panel,
+        .video-fs-wrapper:-webkit-full-screen .fs-side-panel {
+            display: none; flex-direction: column; position: absolute; top: 0; right: 0;
+            width: 380px; height: 100vh; overflow-y: auto; padding: 16px; gap: 16px;
+            background: #0d1117; color: #e6edf3; z-index: 100;
+        }
+        /* Panel open state */
+        .video-fs-wrapper:fullscreen.fs-panel-open .fs-side-panel,
+        .video-fs-wrapper:-webkit-full-screen.fs-panel-open .fs-side-panel {
+            display: flex;
+        }
+        .video-fs-wrapper:fullscreen .fs-side-panel .fs-glass-card,
+        .video-fs-wrapper:-webkit-full-screen .fs-side-panel .fs-glass-card {
+            background: rgba(255,255,255,0.85); backdrop-filter: blur(12px);
+            border: 1px solid rgba(255,255,255,0.4); border-radius: 14px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.06); color: #1e293b;
+        }
+        .video-fs-wrapper:fullscreen .fs-side-panel .fs-card-header,
+        .video-fs-wrapper:-webkit-full-screen .fs-side-panel .fs-card-header {
+            background: transparent; border-bottom: 1px solid rgba(0,0,0,0.06);
+            padding: 14px 18px; font-weight: 600; display: flex; align-items: center; gap: 8px;
+        }
+        .video-fs-wrapper:fullscreen .fs-side-panel .fs-card-header i,
+        .video-fs-wrapper:-webkit-full-screen .fs-side-panel .fs-card-header i { color: #4361ee; }
+        .video-fs-wrapper:fullscreen .fs-side-panel .fs-card-body,
+        .video-fs-wrapper:-webkit-full-screen .fs-side-panel .fs-card-body { padding: 16px 18px; }
+        /* Hide native fullscreen button */
+        video::-webkit-media-controls-fullscreen-button { display: none !important; }
+        video::-moz-full-screen-button { display: none !important; }
+        /* Fullscreen button (normal state) */
+        .fs-trigger {
+            position: absolute; bottom: 8px; right: 8px;
+            background: rgba(0,0,0,0.6); color: #fff; border: none;
+            border-radius: 4px; padding: 4px 8px; cursor: pointer;
+            font-size: 14px; z-index: 10; opacity: 0.7; transition: opacity 0.2s;
+        }
+        .fs-trigger:hover { opacity: 1; }
+        /* Toolbar in fullscreen (top-right, contains panel toggle + exit) */
+        .fs-toolbar {
+            display: none; position: fixed; top: 12px; right: 12px; z-index: 2147483647;
+            gap: 8px;
+        }
+        .video-fs-wrapper:fullscreen .fs-toolbar,
+        .video-fs-wrapper:-webkit-full-screen .fs-toolbar { display: flex; }
+        .fs-toolbar button {
+            background: rgba(255,255,255,0.15); color: #fff; border: 1px solid rgba(255,255,255,0.25);
+            border-radius: 6px; padding: 6px 14px; cursor: pointer; font-size: 14px;
+            transition: background 0.2s;
+        }
+        .fs-toolbar button:hover { background: rgba(255,255,255,0.3); }
+        .fs-toolbar button.active { background: rgba(67,97,238,0.7); border-color: rgba(67,97,238,0.9); }
+        /* Side panel hidden in normal state */
+        .fs-side-panel { display: none; }
     </style>
 </head>
 <body>
@@ -174,8 +240,82 @@
                         <button class="btn-danger-custom" id="btnStop" onclick="stop()" style="display:none;"><i class="bi bi-stop-fill"></i> 断开连接</button>
                     </div>
                     <div class="mt-3">
-                        <video id="video" autoplay playsinline muted controls></video>
-                        <audio id="audio" autoplay></audio>
+                        <div id="videoFullscreenWrapper" class="video-fs-wrapper">
+                            <video id="video" autoplay playsinline muted controls></video>
+                            <audio id="audio" autoplay></audio>
+                            <button class="fs-trigger" id="fsBtn" onclick="toggleFullscreen()" title="全屏">⛶</button>
+                            <div class="fs-toolbar" id="fsToolbar">
+                                <button id="fsPanelToggle" onclick="toggleFsPanel()" title="控制面板">☰ 控制</button>
+                                <button onclick="toggleFullscreen()" title="退出全屏">✕ 退出</button>
+                            </div>
+                            <div id="fsSidePanel" class="fs-side-panel">
+                                <!-- Voice Conversation -->
+                                <div class="fs-glass-card">
+                                    <div class="fs-card-header"><i class="bi bi-mic-fill"></i> 语音对话</div>
+                                    <div class="fs-card-body">
+                                        <div id="fsVoiceStatusBar" class="small mb-2" style="display:none;color:#64748b;">
+                                            <span id="fsVoiceStatusIcon">🎤</span>
+                                            <span id="fsVoiceStatusText"></span>
+                                        </div>
+                                        <div class="d-flex gap-2 align-items-center mb-2">
+                                            <select class="form-select form-select-sm" id="fsVoiceMode"
+                                                onchange="document.getElementById('voiceMode').value=this.value; onVoiceModeChange();"
+                                                style="width:130px;">
+                                                <option value="off">🎙️ 关闭</option>
+                                                <option value="free">💬 自由对话</option>
+                                                <option value="ptt">🎤 按住说话</option>
+                                            </select>
+                                            <button class="btn-outline-custom btn-sm" onclick="interrupt()"><i class="bi bi-stop-circle"></i> 打断</button>
+                                        </div>
+                                        <div id="fsPttContainer" style="display:none;" class="mb-2">
+                                            <button id="fsPttButton" class="btn-primary-custom w-100 py-3 fs-5"
+                                                onmousedown="pttStart()" onmouseup="pttEnd()" ontouchstart="pttStart()" ontouchend="pttEnd()">
+                                                🎤 按住说话
+                                            </button>
+                                        </div>
+                                        <div id="fsVoiceTranscript" class="voice-transcript mb-2" style="display:none;"></div>
+                                        <div id="fsVoiceChatLog" class="voice-chat-log"></div>
+                                    </div>
+                                </div>
+                                <!-- Text Driver -->
+                                <div class="fs-glass-card">
+                                    <div class="fs-card-header"><i class="bi bi-chat-text-fill"></i> 文本驱动</div>
+                                    <div class="fs-card-body">
+                                        <div class="mb-2">
+                                            <label class="form-label">输入文本 <span class="param-hint">(type: echo/chat)</span></label>
+                                            <textarea class="form-control form-control-sm" id="fsTxtMessage" rows="2" placeholder="输入要播报的文本..."></textarea>
+                                        </div>
+                                        <div class="d-flex gap-2 align-items-end mb-2">
+                                            <select class="form-select form-select-sm" style="width:120px;" id="fsTxtType">
+                                                <option value="echo">Echo 复读</option>
+                                                <option value="chat">Chat LLM</option>
+                                            </select>
+                                            <div class="form-check form-switch">
+                                                <input class="form-check-input" type="checkbox" id="fsTxtInterrupt" checked>
+                                                <label class="form-check-label small">打断</label>
+                                            </div>
+                                            <button class="btn-primary-custom btn-sm ms-auto" onclick="sendFsText()"><i class="bi bi-send"></i> 发送</button>
+                                            <button class="btn-outline-custom btn-sm" onclick="interrupt()"><i class="bi bi-stop-circle"></i> 打断</button>
+                                        </div>
+                                        <div class="d-flex gap-2 align-items-center">
+                                            <label class="form-label mb-0" style="white-space:nowrap;">TTS 模型</label>
+                                            <select class="form-select form-select-sm" id="fsTtsModel" style="flex:1;">
+                                                <option value="qwen-tts-realtime-latest" selected>qwen-tts-realtime-latest</option>
+                                                <option value="qwen-tts-realtime-2025-07-15">qwen-tts-realtime-2025-07-15</option>
+                                                <option value="qwen-tts-2025-05-22">qwen-tts-2025-05-22</option>
+                                                <option value="qwen-tts-latest">qwen-tts-latest</option>
+                                                <option value="qwen3-tts-flash-realtime">qwen3-tts-flash-realtime ⚠️</option>
+                                            </select>
+                                            <label class="form-label mb-0" style="white-space:nowrap;">音色</label>
+                                            <select class="form-select form-select-sm" id="fsTtsVoice" style="width:120px;">
+                                                <option value="Cherry">Cherry</option>
+                                                <option value="Ethan">Ethan</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -591,6 +731,12 @@ function onVoiceModeChange() {
             }
         });
     }
+
+    // Sync fullscreen overlay voice mode
+    const fsVm = document.getElementById('fsVoiceMode');
+    if (fsVm) { fsVm.value = newMode; }
+    const fsPttC = document.getElementById('fsPttContainer');
+    if (fsPttC) { fsPttC.style.display = (newMode === 'ptt') ? 'block' : 'none'; }
 }
 
 function resetVoiceMode() {
@@ -1062,6 +1208,10 @@ function pttStart() {
     document.getElementById('pttButton').className = 'btn-danger-custom w-100 py-3 fs-5';
     document.getElementById('pttButton').textContent = '✋ 松开发送';
 
+    // Sync fullscreen PTT button
+    const fsPttBtn = document.getElementById('fsPttButton');
+    if (fsPttBtn) { fsPttBtn.className = 'btn btn-danger w-100 py-2'; fsPttBtn.textContent = '✋ 松开发送'; }
+
     // Clear any previous waiting state so new input is not discarded
     _clearVoiceWaiting();
 
@@ -1105,6 +1255,10 @@ function pttEnd() {
 
     document.getElementById('pttButton').className = 'btn-primary-custom w-100 py-3 fs-5';
     document.getElementById('pttButton').textContent = '🎤 按住说话';
+
+    // Sync fullscreen PTT button
+    const fsPttBtn = document.getElementById('fsPttButton');
+    if (fsPttBtn) { fsPttBtn.className = 'btn btn-primary w-100 py-2'; fsPttBtn.textContent = '🎤 按住说话'; }
 
     showVoiceStatus(true, '⏳', '处理中...');
 
@@ -1386,6 +1540,106 @@ const _origStop = stop;
 stop = function() {
     try { if (voiceMode !== 'off') resetVoiceMode(); } catch(e) { console.error('voice cleanup error:', e); }
     _origStop();
+};
+
+// ─── Fullscreen Side Panel ────────────────────────────────────
+const _wrapper = document.getElementById('videoFullscreenWrapper');
+let _isFullscreen = false;
+
+function toggleFullscreen() {
+    const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
+    if (fsEl) {
+        (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+    } else {
+        const req = _wrapper.requestFullscreen || _wrapper.webkitRequestFullscreen;
+        if (req) req.call(_wrapper);
+    }
+}
+
+document.addEventListener('fullscreenchange', onFullscreenChange);
+document.addEventListener('webkitfullscreenchange', onFullscreenChange);
+
+function onFullscreenChange() {
+    const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
+    _isFullscreen = (fsEl === _wrapper);
+    if (_isFullscreen) {
+        // Sync state into side panel (ready for when user opens it)
+        document.getElementById('fsVoiceMode').value = document.getElementById('voiceMode').value;
+        document.getElementById('fsPttContainer').style.display =
+            (document.getElementById('voiceMode').value === 'ptt') ? 'block' : 'none';
+        document.getElementById('fsTxtType').value = document.getElementById('txtType').value;
+        document.getElementById('fsTxtInterrupt').checked = document.getElementById('txtInterrupt').checked;
+        document.getElementById('fsTtsModel').value = document.getElementById('ttsModel').value;
+        document.getElementById('fsTtsVoice').value = document.getElementById('ttsVoice').value;
+        const fsLog = document.getElementById('fsVoiceChatLog');
+        fsLog.innerHTML = document.getElementById('voiceChatLog').innerHTML;
+        fsLog.scrollTop = fsLog.scrollHeight;
+        // Panel starts closed
+        _wrapper.classList.remove('fs-panel-open');
+        document.getElementById('fsPanelToggle').classList.remove('active');
+    } else {
+        _wrapper.classList.remove('fs-panel-open');
+        document.getElementById('fsPanelToggle').classList.remove('active');
+    }
+}
+
+function toggleFsPanel() {
+    const open = _wrapper.classList.toggle('fs-panel-open');
+    document.getElementById('fsPanelToggle').classList.toggle('active', open);
+}
+
+// Send text from fullscreen side panel
+function sendFsText() {
+    const fsInput = document.getElementById('fsTxtMessage');
+    if (!fsInput.value.trim()) return;
+    // Sync to main panel
+    document.getElementById('txtMessage').value = fsInput.value;
+    document.getElementById('txtType').value = document.getElementById('fsTxtType').value;
+    document.getElementById('txtInterrupt').checked = document.getElementById('fsTxtInterrupt').checked;
+    document.getElementById('ttsModel').value = document.getElementById('fsTtsModel').value;
+    document.getElementById('ttsVoice').value = document.getElementById('fsTtsVoice').value;
+    sendText();
+    fsInput.value = '';
+}
+
+// Mirror voice chat log and status to fullscreen panel
+const _origAppendVoiceChatLog = appendVoiceChatLog;
+appendVoiceChatLog = function(role, text) {
+    _origAppendVoiceChatLog(role, text);
+    if (_isFullscreen) {
+        const fsLog = document.getElementById('fsVoiceChatLog');
+        const div = document.createElement('div');
+        div.className = role === 'user' ? 'msg-user' : 'msg-avatar';
+        div.textContent = text;
+        fsLog.appendChild(div);
+        fsLog.scrollTop = fsLog.scrollHeight;
+    }
+};
+
+const _origShowVoiceStatus = showVoiceStatus;
+showVoiceStatus = function(show, icon, text) {
+    _origShowVoiceStatus(show, icon, text);
+    if (_isFullscreen) {
+        const bar = document.getElementById('fsVoiceStatusBar');
+        if (show) {
+            bar.style.display = 'block';
+            document.getElementById('fsVoiceStatusIcon').textContent = icon;
+            document.getElementById('fsVoiceStatusText').textContent = text;
+        } else {
+            bar.style.display = 'none';
+        }
+    }
+};
+
+const _origShowVoiceTranscript = showVoiceTranscript;
+showVoiceTranscript = function(text, interim) {
+    _origShowVoiceTranscript(text, interim);
+    if (_isFullscreen) {
+        const el = document.getElementById('fsVoiceTranscript');
+        if (!text) { el.style.display = 'none'; el.textContent = ''; return; }
+        el.style.display = 'block';
+        el.textContent = (interim ? '...' : '✓ ') + text;
+    }
 };
 
 </script>
