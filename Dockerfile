@@ -1,55 +1,36 @@
-# Copyright (c) 2020-2022, NVIDIA CORPORATION.  All rights reserved.
-#
-# NVIDIA CORPORATION and its licensors retain all intellectual property
-# and proprietary rights in and to this software, related documentation
-# and any modifications thereto.  Any use, reproduction, disclosure or
-# distribution of this software and related documentation without an express
-# license agreement from NVIDIA CORPORATION is strictly prohibited.
+FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
 
-ARG BASE_IMAGE=nvcr.io/nvidia/cuda:11.6.1-cudnn8-devel-ubuntu20.04
-FROM $BASE_IMAGE
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
 
-RUN apt-get update -yq --fix-missing \
- && DEBIAN_FRONTEND=noninteractive apt-get install -yq --no-install-recommends \
-    pkg-config \
-    wget \
-    cmake \
-    curl \
-    git \
-    vim
+# 系统依赖
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    software-properties-common \
+    && add-apt-repository ppa:deadsnakes/ppa \
+    && apt-get update && apt-get install -y --no-install-recommends \
+    python3.12 python3.12-dev python3.12-venv python3-pip \
+    ffmpeg git wget curl \
+    && rm -rf /var/lib/apt/lists/*
 
-#ENV PYTHONDONTWRITEBYTECODE=1
-#ENV PYTHONUNBUFFERED=1
+# 设置 Python 3.12 为默认
+RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1 \
+    && update-alternatives --install /usr/bin/python python /usr/bin/python3.12 1
 
-# nvidia-container-runtime
-#ENV NVIDIA_VISIBLE_DEVICES all
-#ENV NVIDIA_DRIVER_CAPABILITIES compute,utility,graphics
+WORKDIR /app
 
-RUN wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
-RUN sh Miniconda3-latest-Linux-x86_64.sh -b -u -p ~/miniconda3
-RUN ~/miniconda3/bin/conda init
-RUN source ~/.bashrc
-RUN conda create -n nerfstream python=3.10
-RUN conda activate nerfstream
+# 安装 PyTorch（利用缓存层，单独 COPY requirements.txt）
+COPY requirements.txt .
+RUN pip3 install --no-cache-dir --break-system-packages \
+    torch==2.9.1 torchvision==0.24.1 torchaudio==2.9.1 \
+    --index-url https://download.pytorch.org/whl/cu121 \
+    && pip3 install --no-cache-dir --break-system-packages -r requirements.txt
 
-RUN pip config set global.index-url https://mirrors.aliyun.com/pypi/simple/
-# install depend
-RUN conda install pytorch==1.12.1 torchvision==0.13.1 cudatoolkit=11.3 -c pytorch
-Copy requirements.txt ./
-RUN pip install -r requirements.txt
+# 拷贝项目代码（models/ 和 data/ 通过 volume 挂载，不打进镜像）
+COPY . .
+RUN chmod +x docker-entrypoint.sh
 
-# additional libraries
-# RUN pip install "git+https://github.com/facebookresearch/pytorch3d.git"
-# RUN pip install tensorflow-gpu==2.8.0
+EXPOSE 8010
+# WebRTC UDP port range
+EXPOSE 20000-20100/udp
 
-# RUN pip uninstall protobuf
-# RUN pip install protobuf==3.20.1
-
-# RUN conda install ffmpeg
-# Copy ../python_rtmpstream /python_rtmpstream
-# WORKDIR /python_rtmpstream/python
-# RUN pip install .
-
-Copy ../nerfstream /nerfstream
-WORKDIR /nerfstream
-CMD ["python3", "app.py"]
+ENTRYPOINT ["./docker-entrypoint.sh"]

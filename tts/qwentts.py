@@ -53,6 +53,7 @@ class QwenTTS(BaseTTS):
                 self.speech_rate = 1.0
         # 模型名
         self.model = getattr(opt, 'qwen_tts_model', 'qwen3-tts-flash-realtime')
+        self._default_model = self.model
         # WebSocket URL
         self.ws_url = getattr(opt, 'qwen_tts_url',
                               'wss://dashscope.aliyuncs.com/api-ws/v1/realtime')
@@ -184,7 +185,7 @@ class QwenTTS(BaseTTS):
 
         try:
             speed = float(textevent.get('tts', {}).get('speed', self.speech_rate))
-            new_model = textevent.get('tts', {}).get('model', self.model)
+            new_model = textevent.get('tts', {}).get('model', self._default_model)
 
             need_reconnect = (ref_file != self.voice) or (speed != self.speech_rate) or (new_model != self.model)
             if need_reconnect:

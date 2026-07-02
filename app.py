@@ -41,6 +41,7 @@ from server.session_manager import session_manager
 import argparse
 import random
 import shutil
+import ssl
 import asyncio
 import torch
 from io import BytesIO
@@ -187,12 +188,22 @@ def main():
     elif opt.transport=='rtcpush':
         pagename='rtcpushapi.html'
     logger.info('start http server; http://<serverip>:'+str(opt.listenport)+'/'+pagename)
+    if opt.ssl:
+        logger.info('HTTPS enabled — remote users can use microphone')
     # logger.info('如果使用webrtc，推荐访问webrtc集成前端: http://<serverip>:'+str(opt.listenport)+'/dashboard.html')
     def run_server(runner):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         loop.run_until_complete(runner.setup())
-        site = web.TCPSite(runner, '0.0.0.0', opt.listenport)
+        if opt.ssl:
+            cert = opt.ssl_cert or f'./ssl/cert.pem'
+            key = opt.ssl_key or f'./ssl/key.pem'
+            ssl_ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+            ssl_ctx.load_cert_chain(cert, key)
+            site = web.TCPSite(runner, '0.0.0.0', opt.listenport, ssl_context=ssl_ctx)
+            logger.info('HTTPS server ready at https://<serverip>:'+str(opt.listenport))
+        else:
+            site = web.TCPSite(runner, '0.0.0.0', opt.listenport)
         loop.run_until_complete(site.start())
         if opt.transport=='rtcpush':
             for k in range(opt.max_session):

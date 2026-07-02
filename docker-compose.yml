@@ -1,0 +1,29 @@
+services:
+  livetalking:
+    image: livetalking:latest
+    build: .
+    container_name: livetalking
+    restart: unless-stopped
+    ports:
+      - "${LISTEN_PORT:-8010}:8010"
+      - "20000-20100:20000-20100/udp"
+    env_file:
+      - .env
+    environment:
+      # 指定使用 GPU 1（GPU 0 被 ComfyUI 占用），可改为 1,2 使用多卡
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-1}
+    volumes:
+      - ./models:/app/models
+      - ./data:/app/data
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
